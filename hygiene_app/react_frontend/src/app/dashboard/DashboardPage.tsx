@@ -6,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   Alert,
   AlertDescription,
@@ -17,12 +16,12 @@ import {
   CheckCircle,
   Clock,
   Home,
-  Activity,
   HelpCircle,
   Settings,
   ChevronDown,
   ChevronRight,
   LogOut,
+  Edit,
 } from "lucide-react";
 import {
   Dialog,
@@ -40,11 +39,10 @@ import {
 } from "@/components/ui/collapsible";
 import { branchCodeMap } from "@/components/branchCodeMap";
 
-
 const staffRecords = [
-  { id: 1, name: "田中 太郎", arrivalRegistered: true, departureRegistered: true, temperature: 36.2, symptoms: false, comment: "特に問題ありません" },
-  { id: 2, name: "佐藤 花子", arrivalRegistered: true, departureRegistered: false, temperature: 36.5, symptoms: false, comment: "" },
-  { id: 3, name: "山田 次郎", arrivalRegistered: true, departureRegistered: true, temperature: 37.8, symptoms: true, comment: "軽い頭痛があります" },
+  { id: 1, name: "森 真樹", arrivalRegistered: true, departureRegistered: true, temperature: 36.2, symptoms: false, comment: "特に問題ありません" },
+  { id: 2, name: "菅野 祥平", arrivalRegistered: true, departureRegistered: false, temperature: 36.5, symptoms: false, comment: "" },
+  { id: 3, name: "池田 菜乃", arrivalRegistered: true, departureRegistered: true, temperature: 37.8, symptoms: true, comment: "軽い頭痛があります" },
 ];
 
 const abnormalRecords = staffRecords.filter(
@@ -215,13 +213,13 @@ const branchName = branchCodeMap[branchCode ?? ""] ?? "営業所未設定";
                           {getStatusIcon(record)}
                           <span className={`text-xs ${record.arrivalRegistered && record.departureRegistered ? 'text-green-600' : 'text-yellow-600'}`}>{getStatusText(record)}</span>
                         {record.arrivalRegistered && !record.departureRegistered && (
-  <button
-    onClick={() => navigate(`/form?id=${record.id}`)}
-    className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-300 hover:bg-blue-200 hover:ring-blue-400 transition"
-  >
-    退勤チェック
-  </button>
-)}
+                          <button
+                            onClick={() => navigate(`/form?id=${record.id}`)}
+                            className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-300 hover:bg-blue-200 hover:ring-blue-400 transition"
+                          >
+                            退勤チェック
+                          </button>
+                        )}
 
                         </div>
                       </div>
@@ -282,7 +280,7 @@ const branchName = branchCodeMap[branchCode ?? ""] ?? "営業所未設定";
     activeTab === "health" ? "bg-blue-100 text-blue-700" : "hover:bg-gray-100"
   }`}
 >
-  <Activity className="w-5 h-5 pointer-events-none" />
+  <Edit className="w-5 h-5 pointer-events-none" />
   <span className="pointer-events-none">健康管理</span>
 </button>
 

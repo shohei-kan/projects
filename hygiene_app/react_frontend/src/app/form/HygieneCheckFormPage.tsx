@@ -64,6 +64,7 @@ export default function DailyHygieneCheckForm() {
   const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const navigate = useNavigate();
 
+  
   const [step1Completed, setStep1Completed] = useState(false);
   
   const [basicInfo, setBasicInfo] = useState({
