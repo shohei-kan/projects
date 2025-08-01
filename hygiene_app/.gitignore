@@ -1,0 +1,16 @@
+# Python virtual env
+venv/
+__pycache__/
+*.pyc
+
+# SQLite DB
+db.sqlite3
+
+# VS Code settings
+.vscode/
+
+# macOS
+.DS_Store
+
+# React node_modules（念のため）
+react_frontend/node_modules/
