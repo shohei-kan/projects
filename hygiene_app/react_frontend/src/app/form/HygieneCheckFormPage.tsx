@@ -30,7 +30,8 @@ import {
   ChevronRight,
   CheckCircle,
   ChevronLeft,
-  Clock,
+  ArrowLeft,
+  Home,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Fragment } from "react";
@@ -410,46 +411,49 @@ export default function DailyHygieneCheckForm() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-4">
+    <div className="min-h-screen bg-gray-50 py-4 relative">
       <div className="max-w-7xl mx-auto px-4">
+          {/* 右上の戻るボタン */}
+  <button
+    onClick={() => navigate("/dashboard")}
+    className="absolute top-4 right-4 p-2 rounded-full hover:bg-gray-100 transition"
+    aria-label="ホームへ"
+  >
+    <Home className="w-5 h-5 text-gray-600" />
+  </button>
+
         {/* Header with title and step indicator */}
         <div className="mb-6">
           <h1 className="text-2xl font-medium text-gray-900 mb-4">
             日次衛生チェックフォーム
           </h1>
           
-          {/* Step Indicator */}
-          <div className="flex items-center justify-center mb-4">
-            <div className="flex items-center space-x-4">
-              <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg ${
-                currentStep === 1 
-                  ? "bg-blue-100 text-blue-800 border-2 border-blue-300" 
-                  : "bg-emerald-100 text-emerald-800 border-2 border-emerald-300"
-              }`}>
-                {step1Completed ? (
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                ) : currentStep === 1 ? (
-                  <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
-                ) : (
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                )}
-                <span className="text-sm font-medium">Step 1（出勤時チェック）</span>
-              </div>
-              <ChevronRight className="w-4 h-4 text-gray-400" />
-              <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg ${
-                currentStep === 2 
-                  ? "bg-blue-100 text-blue-800 border-2 border-blue-300" 
-                  : "bg-gray-100 text-gray-500 border-2 border-gray-200"
-              }`}>
-                {currentStep === 2 ? (
-                  <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
-                ) : (
-                  <Clock className="w-4 h-4 text-gray-400" />
-                )}
-                <span className="text-sm font-medium">Step 2（退勤時チェック）</span>
-              </div>
-            </div>
-          </div>
+          {/* Step Indicator with Buttons */}
+<div className="flex items-center justify-center mb-4 space-x-4">
+  <Button
+    variant={currentStep === 1 ? "default" : "outline"}
+    className={`text-sm px-6 py-2 ${
+      currentStep === 1
+        ? "bg-blue-600 text-white hover:bg-blue-700"
+        : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+    }`}
+    onClick={() => setCurrentStep(1)}
+  >
+    出勤時チェック
+  </Button>
+  <Button
+    variant={currentStep === 2 ? "default" : "outline"}
+    className={`text-sm px-6 py-2 ${
+      currentStep === 2
+        ? "bg-blue-600 text-white hover:bg-blue-700"
+        : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+    }`}
+    onClick={() => setCurrentStep(2)}
+  >
+    退勤時チェック
+  </Button>
+</div>
+
 
           <p className="text-gray-600 text-sm text-center">
             {currentStep === 1 
@@ -880,7 +884,7 @@ export default function DailyHygieneCheckForm() {
                 />
               </div>
 
-              {/* 所長又は責任者の確認 */}
+              {/* 所長又は責任者の確認
               <div className="mb-8">
                 <Card className={`border-gray-200 overflow-hidden ${!finalConfirmation.directorSignature ? 'ring-2 ring-amber-200' : ''}`}>
                   <CardHeader className="pb-3 bg-gray-100 border-gray-300">
@@ -914,7 +918,7 @@ export default function DailyHygieneCheckForm() {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
+              </div> */}
 
               {/* Step 2 Buttons */}
               <div className="flex justify-center gap-4 pb-8">
@@ -924,14 +928,14 @@ export default function DailyHygieneCheckForm() {
                   className="border-gray-300 text-gray-700 hover:bg-gray-50 px-6 py-3 text-base gap-2"
                 >
                   <ChevronLeft className="w-5 h-5" />
-                  戻る
+                  出勤時チェックへ
                 </Button>
                 <Button
                   onClick={handleFinalSubmit}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg"
                 >
                   <Save className="w-5 h-5" />
-                  最終送信
+                  登録
                 </Button>
               </div>
             </div>
