@@ -15,7 +15,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { AlertCircle } from "lucide-react";
-import { mockBranches } from "@/data/mockBranches"; // モックデータ
+import { mockBranches } from "@/data";
+
 
 export default function LoginForm() {
   const [officeCode, setOfficeCode] = useState("");
