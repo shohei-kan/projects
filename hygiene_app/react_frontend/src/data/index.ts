@@ -10,3 +10,4 @@ export type { Employee } from "./mockEmployees";
 export type { Record } from "./mockRecords";
 export type { RecordItem } from "./mockRecordItems";
 export type { CategoryDefinition } from "./hygieneCategories";
+export type { Branch } from "./mockBranches";
