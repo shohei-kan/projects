@@ -5,7 +5,6 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
@@ -13,40 +12,47 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-  DialogDescription 
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { AlertCircle } from "lucide-react";
+import { mockBranches } from "@/data/mockBranches"; // モックデータ
 
 export default function LoginForm() {
-  const [officeCode, setOfficeCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [officeCode, setOfficeCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const navigate = useNavigate();
 
   const handleLogin = (e: React.FormEvent) => {
-  e.preventDefault();
+    e.preventDefault();
 
-  if (!officeCode || !password) {
-    setError('営業所コードとパスワードを入力してください。');
-    return;
-  }
+    if (!officeCode || !password) {
+      setError("営業所コードとパスワードを入力してください。");
+      return;
+    }
 
-  if (officeCode.length < 6 || password.length !== 4) {
-    setError('ログイン情報が正しくありません');
-    return;
-  }
+    // ✅ モックデータから営業所を検索
+    const branch = mockBranches.find((b) => b.code === officeCode);
 
-  setError('');
-  console.log('ログイン成功:', { officeCode, password });
+    if (!branch) {
+      setError("営業所コードが見つかりません");
+      return;
+    }
 
-  // ✅ ログイン状態 + 日付を保存
-  localStorage.setItem("isLoggedIn", "true");
-  localStorage.setItem("loginDate", new Date().toDateString()); // ← ★追加★
-  localStorage.setItem("branchCode", officeCode);
-  navigate("/dashboard");
-};
+    if (branch.password !== password) {
+      setError("パスワードが間違っています");
+      return;
+    }
 
+    // 認証成功
+    setError("");
+    localStorage.setItem("isLoggedIn", "true");
+    localStorage.setItem("loginDate", new Date().toDateString());
+    localStorage.setItem("branchCode", branch.code);
+
+    navigate("/dashboard");
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-green-50 flex items-center justify-center p-4">
@@ -101,14 +107,12 @@ export default function LoginForm() {
               </DialogTrigger>
 
               <DialogContent className="sm:max-w-md bg-white text-gray-800 shadow-lg rounded-xl">
-  <DialogHeader>
-    <DialogTitle>ログインできない場合の対処方法</DialogTitle>
-    <DialogDescription className="sr-only">
-  ログインエラー対処方法の説明
-</DialogDescription>
-
-  </DialogHeader>
-
+                <DialogHeader>
+                  <DialogTitle>ログインできない場合の対処方法</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    ログインエラー対処方法の説明
+                  </DialogDescription>
+                </DialogHeader>
 
                 <div className="space-y-4 pt-4">
                   <ul className="space-y-3 text-gray-700">
