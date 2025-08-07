@@ -1,0 +1,1 @@
+export const TODAY_STR = "2025-08-01";
