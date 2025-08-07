@@ -38,7 +38,7 @@ import { Fragment } from "react";
 import { Listbox, Transition } from "@headlessui/react";
 import { CheckIcon, ChevronUpDownIcon } from "@heroicons/react/20/solid";
 import { mockEmployees, mockRecords, mockRecordItems, hygieneCategories } from "@/data";
-
+import { TODAY_STR } from "@/data/mockDate";
 
 
 
@@ -53,44 +53,71 @@ interface CheckItem {
 }
 
 export default function DailyHygieneCheckForm() {
-  const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const navigate = useNavigate();
-
   const [searchParams] = useSearchParams();
+
   const employeeCode = searchParams.get("employeeCode") ?? "";
-  const todayStr = "2025-08-01"; // モック用日付（テスト用に固定）
+  const stepParam = parseInt(searchParams.get("step") ?? "1", 10);
+  const [currentStep, setCurrentStep] = useState<1 | 2>(
+    stepParam === 2 ? 2 : 1
+  );
+
+  const todayStr = TODAY_STR;
+
+  const [step1Completed, setStep1Completed] = useState(false);
+
+  // 出勤済みか判定して step1Completed をセット
+  useEffect(() => {
+    if (!employeeCode) return;
+
+    const todayRecord = mockRecords.find(
+      (r) =>
+        r.employeeCode === employeeCode &&
+        r.date === todayStr &&
+        r.work_start_time !== null
+    );
+
+    if (todayRecord) {
+      setStep1Completed(true);
+    }
+
+    // 出勤未登録のまま退勤ステップに進もうとした場合ブロック
+    if (currentStep === 2 && !todayRecord) {
+      alert("出勤登録がされていません。先に出勤チェックを完了してください。");
+      navigate("/dashboard");
+    }
+  }, [employeeCode, currentStep, todayStr, navigate]);
+
+  // 出勤済みなら従業員を自動選択
+  useEffect(() => {
+    if (!employeeCode) return;
+
+    const employee = mockEmployees.find(emp => emp.code === employeeCode);
+    if (employee) {
+      setBasicInfo(prev => ({
+        ...prev,
+        employee: employee.code,
+      }));
+    }
+  }, [employeeCode]);
 
   // ログイン中の営業所コードを取得
   const branchCode = (localStorage.getItem("branchCode") ?? "").trim();
 
   // ログイン営業所の従業員だけ抽出（useMemo 推奨）
   const employeesInOffice = useMemo(() => {
-  return mockEmployees.filter((emp) => emp.branchCode === branchCode);
-}, [branchCode]);
+    return mockEmployees.filter((emp) => emp.branchCode === branchCode);
+  }, [branchCode]);
 
-console.log("branchCode:", branchCode);
-console.log("employeesInOffice:", employeesInOffice);
-  const [step1Completed, setStep1Completed] = useState(false);
-  
   const [basicInfo, setBasicInfo] = useState({
-    date: new Date().toISOString().split("T")[0],
+    date: new Date(TODAY_STR).toISOString().split("T")[0],
     employee: "",
     supervisor: "",
     temperature: "36.0",
   });
 
-  useEffect(() => {
-  if (!employeeCode) return;
-
-  const employee = mockEmployees.find(emp => emp.code === employeeCode);
-  if (employee) {
-    setBasicInfo(prev => ({
-      ...prev,
-      employee: employee.name,
-    }));
-  }
-}, [employeeCode]);
-
+  console.log("currentStep:", currentStep);
+  console.log("step1Completed:", step1Completed);
 
 
   const [healthChecks, setHealthChecks] = useState<CheckItem[]>(
@@ -280,13 +307,13 @@ console.log("employeesInOffice:", employeesInOffice);
       return;
     }
 
-    if (!finalConfirmation.directorSignature) {
-      alert("所長又は責任者のサインを入力してください。");
-      return;
-    }
+    
+    alert("退勤チェックが完了しました");
+  navigate("/dashboard");
 
-    alert("衛生チェックフォームが最終送信されました");
   };
+ 
+
 
   const CompactCheckboxSection = ({
     title,
