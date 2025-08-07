@@ -13,7 +13,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Listbox } from '@headlessui/react'
 import { ChevronUpDownIcon, CheckIcon } from '@heroicons/react/20/solid'
-
+import { TODAY_STR } from "@/data/mockDate";
 interface OfficeOption {
   value: string
   label: string
@@ -74,7 +74,7 @@ const generateDailyData = (targetDate: string, officeName: string): HygieneRecor
 // Generate mock data for one month (individual employee) - now used for 'daily' mode
 const generateMonthData = (employeeName: string): HygieneRecord[] => {
   const records: HygieneRecord[] = []
-  const today = new Date()
+  const today = new Date(TODAY_STR)
   const currentMonth = today.getMonth()
   const currentYear = today.getFullYear()
   
@@ -137,7 +137,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
   const [viewMode, setViewMode] = useState<'individual' | 'daily'>('individual')
   const [selectedOffice, setSelectedOffice] = useState('all')
   const [selectedEmployee, setSelectedEmployee] = useState('all')
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
+  const [selectedDate, setSelectedDate] = useState(new Date(TODAY_STR).toISOString().split('T')[0])
   const [showAbnormalOnly, setShowAbnormalOnly] = useState(false)
   const [showCommentOnly, setShowCommentOnly] = useState(false)
   const [showUnsubmittedOnly, setShowUnsubmittedOnly] = useState(false)
@@ -613,7 +613,7 @@ useEffect(() => {
         {/* Results summary */}
         <div className="flex items-center justify-between text-sm text-gray-600">
           <span>{getViewModeDescription()}</span>
-          <span>最終更新: {new Date().toLocaleString('ja-JP')}</span>
+          <span>最終更新: {new Date(TODAY_STR).toLocaleString('ja-JP')}</span>
         </div>
 
         {/* Data Table */}

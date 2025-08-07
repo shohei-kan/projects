@@ -38,8 +38,11 @@ import {
   mockEmployees,
   mockRecords,
   mockRecordItems,
-  mockBranches,
+  mockBranches
 } from "@/data";
+
+import { TODAY_STR } from "@/data/mockDate"; 
+
 
 // -----------------------------
 // ユーティリティ関数
@@ -98,7 +101,7 @@ const branchName =
   mockBranches.find((b) => b.code === branchCode)?.name ?? "営業所未設定";
 
 // モックの日付（テスト用）
-const todayStr = "2025-08-01";
+const todayStr = TODAY_STR;
 
 // 当日・営業所のスタッフデータ生成
 const staffRecords: StaffRecord[] = mockEmployees
@@ -156,7 +159,7 @@ const recordsWithComments = staffRecords.filter(
 // メインコンポーネント
 // -----------------------------
 export default function HygieneDashboard() {
-  const today = new Date();
+  const today = new Date(TODAY_STR);
   const [activeTab, setActiveTab] = useState("home");
   const [password, setPassword] = useState("");
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -292,7 +295,7 @@ export default function HygieneDashboard() {
                           !record.departureRegistered && (
                             <button
                               onClick={() =>
-                                navigate(`/form?employeeCode=${record.id}`)
+                                navigate(`/form?employeeCode=${record.id}&step=2`)
                               }
                               className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-300 hover:bg-blue-200 hover:ring-blue-400 transition"
                             >

@@ -16,6 +16,10 @@ import {
 } from "@/components/ui/dialog";
 import { AlertCircle } from "lucide-react";
 import { mockBranches } from "@/data";
+import { TODAY_STR } from "@/data/mockDate";
+
+// const todayStr = "2025-08-01"; ←これを削除して
+const todayStr = TODAY_STR;
 
 
 export default function LoginForm() {
@@ -49,7 +53,7 @@ export default function LoginForm() {
     // 認証成功
     setError("");
     localStorage.setItem("isLoggedIn", "true");
-    localStorage.setItem("loginDate", new Date().toDateString());
+    localStorage.setItem("loginDate", new Date(TODAY_STR).toDateString());
     localStorage.setItem("branchCode", branch.code);
 
     navigate("/dashboard");
