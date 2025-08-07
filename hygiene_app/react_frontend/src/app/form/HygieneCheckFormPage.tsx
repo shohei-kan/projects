@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo,useEffect, useState} from "react";
 import { Button } from "@components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@components/ui/card";
 import { Input } from "@components/ui/input";
@@ -33,23 +33,15 @@ import {
   ArrowLeft,
   Home,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate,useSearchParams } from "react-router-dom";
 import { Fragment } from "react";
 import { Listbox, Transition } from "@headlessui/react";
 import { CheckIcon, ChevronUpDownIcon } from "@heroicons/react/20/solid";
+import { mockEmployees, mockRecords, mockRecordItems, hygieneCategories } from "@/data";
 
 
 
-const employees = [
-  "森 真樹",
-  "菅野 祥平",
-  "池田 菜乃",
-  "鈴木 美咲",
-  "高橋 健一",
-  "伊藤 誠",
-  "渡辺 恵子",
-  "松本 大樹",
-];
+
 
 interface CheckItem {
   id: string;
@@ -64,7 +56,20 @@ export default function DailyHygieneCheckForm() {
   const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const navigate = useNavigate();
 
-  
+  const [searchParams] = useSearchParams();
+  const employeeCode = searchParams.get("employeeCode") ?? "";
+  const todayStr = "2025-08-01"; // モック用日付（テスト用に固定）
+
+  // ログイン中の営業所コードを取得
+  const branchCode = (localStorage.getItem("branchCode") ?? "").trim();
+
+  // ログイン営業所の従業員だけ抽出（useMemo 推奨）
+  const employeesInOffice = useMemo(() => {
+  return mockEmployees.filter((emp) => emp.branchCode === branchCode);
+}, [branchCode]);
+
+console.log("branchCode:", branchCode);
+console.log("employeesInOffice:", employeesInOffice);
   const [step1Completed, setStep1Completed] = useState(false);
   
   const [basicInfo, setBasicInfo] = useState({
@@ -73,6 +78,20 @@ export default function DailyHygieneCheckForm() {
     supervisor: "",
     temperature: "36.0",
   });
+
+  useEffect(() => {
+  if (!employeeCode) return;
+
+  const employee = mockEmployees.find(emp => emp.code === employeeCode);
+  if (employee) {
+    setBasicInfo(prev => ({
+      ...prev,
+      employee: employee.name,
+    }));
+  }
+}, [employeeCode]);
+
+
 
   const [healthChecks, setHealthChecks] = useState<CheckItem[]>(
     [
@@ -179,6 +198,7 @@ export default function DailyHygieneCheckForm() {
         "未実施の場合は直ちに規定の手洗い手順（石鹸で30秒以上）を実施してください",
     },
   ]);
+
 
   const [confirmerInfo, setConfirmerInfo] = useState({
     confirmer: "",
@@ -411,6 +431,19 @@ export default function DailyHygieneCheckForm() {
     );
   };
 
+  const employee = mockEmployees.find(e => e.code === employeeCode);
+
+
+const record = mockRecords.find(
+  r => r.employeeCode === employeeCode && r.date === todayStr
+);
+
+const recordItems = record
+  ? mockRecordItems.filter(item => item.recordId === record.id)
+  : [];
+
+
+
   return (
     <div className="min-h-screen bg-gray-50 py-4 relative">
       <div className="max-w-7xl mx-auto px-4">
@@ -481,7 +514,7 @@ export default function DailyHygieneCheckForm() {
     {basicInfo.employee && (
       <div className="flex items-center justify-center flex-1">
         <p className="text-3xl text-gray-700 font-semibold text-center">
-          👤 {basicInfo.employee}
+          👤 { mockEmployees.find(emp => emp.code === basicInfo.employee)?.name || basicInfo.employee}
         </p>
       </div>
     )}
@@ -543,75 +576,72 @@ export default function DailyHygieneCheckForm() {
 <div className="space-y-1">
   <span className="text-gray-900 text-sm">従業員名</span>
 
-  <Listbox
-    value={basicInfo.employee}
-    onChange={(value) =>
-      setBasicInfo({ ...basicInfo, employee: value })
-    }
-  >
-    <div className="relative">
-      <Listbox.Button
-        className={`relative w-full cursor-default rounded-md border px-3 py-2 text-left text-sm focus:outline-none ${
-          !basicInfo.employee
-            ? "border-amber-300 bg-amber-50"
-            : "border-gray-300 bg-white"
-        }`}
-      >
-        <span className="block truncate">
-          {basicInfo.employee || "従業員を選択"}
-        </span>
-        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-          <ChevronUpDownIcon className="h-4 w-4 text-gray-400" />
-        </span>
-      </Listbox.Button>
+<Listbox
+  value={basicInfo.employee}
+  onChange={(code) => {
+    setBasicInfo({ ...basicInfo, employee: code });
+  }}
+>
+  <div className="relative">
+    <Listbox.Button
+      className={`relative w-full cursor-default rounded-md border px-3 py-2 text-left text-sm focus:outline-none ${
+        !basicInfo.employee
+          ? "border-amber-300 bg-amber-50"
+          : "border-gray-300 bg-white"
+      }`}
+    >
+      <span className="block truncate">
+        {
+          mockEmployees.find(emp => emp.code === basicInfo.employee)?.name ||
+          "従業員を選択"
+        }
+      </span>
+      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
+        <ChevronUpDownIcon className="h-4 w-4 text-gray-400" />
+      </span>
+    </Listbox.Button>
 
-      <Transition
-        as={Fragment}
-        leave="transition ease-in duration-100"
-        leaveFrom="opacity-100"
-        leaveTo="opacity-0"
-      >
-        <Listbox.Options className="absolute z-[9999] mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
-          {employees.map((employee) => (
-            <Listbox.Option
-              key={employee}
-              className={({ active }) =>
-                `relative cursor-default select-none py-2 pl-10 pr-4 ${
-                  active ? "bg-blue-100 text-blue-700" : "text-gray-900"
-                }`
-              }
-              value={employee}
-            >
-              {({ selected }) => (
-                <>
-                  <span
-                    className={`block truncate ${
-                      selected ? "font-medium" : "font-normal"
-                    }`}
-                  >
-                    {employee}
+    <Transition
+      as={Fragment}
+      leave="transition ease-in duration-100"
+      leaveFrom="opacity-100"
+      leaveTo="opacity-0"
+    >
+      <Listbox.Options className="absolute z-[9999] mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+        {employeesInOffice.map((employee) => (
+          <Listbox.Option
+            key={employee.code}
+            value={employee.code}
+            className={({ active }) =>
+              `relative cursor-default select-none py-2 pl-10 pr-4 ${
+                active ? "bg-blue-100 text-blue-700" : "text-gray-900"
+              }`
+            }
+          >
+            {({ selected }) => (
+              <>
+                <span className={`block truncate ${selected ? "font-medium" : "font-normal"}`}>
+                  {employee.name}
+                </span>
+                {selected && (
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-blue-600">
+                    <CheckIcon className="h-4 w-4" aria-hidden="true" />
                   </span>
-                  {selected ? (
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-blue-600">
-                      <CheckIcon className="h-4 w-4" aria-hidden="true" />
-                    </span>
-                  ) : null}
-                </>
-              )}
-            </Listbox.Option>
-          ))}
-        </Listbox.Options>
-      </Transition>
-    </div>
-  </Listbox>
+                )}
+              </>
+            )}
+          </Listbox.Option>
+        ))}
+      </Listbox.Options>
+    </Transition>
+  </div>
+</Listbox>
 </div>
 
 
                     {/* </div> */}
-                    <div className="space-y-1">
-                     <span className="text-gray-900 text-sm">
-  確認者名
-</span>
+                    
+ 
 {/* <Select
   value={basicInfo.supervisor}
   onValueChange={(value) =>
@@ -642,10 +672,13 @@ export default function DailyHygieneCheckForm() {
 </SelectContent>
 
 </Select> */}
-<Listbox
+<div className="space-y-1">
+  <span className="text-gray-900 text-sm">確認者名</span>
+
+  <Listbox
     value={basicInfo.supervisor}
-    onChange={(value) =>
-      setBasicInfo({ ...basicInfo, supervisor: value })
+    onChange={(code) =>
+      setBasicInfo({ ...basicInfo, supervisor: code })
     }
   >
     <div className="relative">
@@ -657,12 +690,16 @@ export default function DailyHygieneCheckForm() {
         }`}
       >
         <span className="block truncate">
-          {basicInfo.supervisor || "確認者を選択"}
+          {
+            mockEmployees.find(emp => emp.code === basicInfo.supervisor)?.name ||
+            "確認者を選択"
+          }
         </span>
         <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
           <ChevronUpDownIcon className="h-4 w-4 text-gray-400" />
         </span>
       </Listbox.Button>
+
       <Transition
         as={Fragment}
         leave="transition ease-in duration-100"
@@ -670,15 +707,15 @@ export default function DailyHygieneCheckForm() {
         leaveTo="opacity-0"
       >
         <Listbox.Options className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
-          {employees.map((employee) => (
+          {employeesInOffice.map((employee) => (
             <Listbox.Option
-              key={employee}
+              key={employee.code}
+              value={employee.code}
               className={({ active }) =>
                 `relative cursor-default select-none py-2 pl-10 pr-4 ${
                   active ? "bg-blue-100 text-blue-700" : "text-gray-900"
                 }`
               }
-              value={employee}
             >
               {({ selected }) => (
                 <>
@@ -687,7 +724,7 @@ export default function DailyHygieneCheckForm() {
                       selected ? "font-medium" : "font-normal"
                     }`}
                   >
-                    {employee}
+                    {employee.name}
                   </span>
                   {selected ? (
                     <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-blue-600">
@@ -702,9 +739,8 @@ export default function DailyHygieneCheckForm() {
       </Transition>
     </div>
   </Listbox>
+</div>
 
-
-                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -872,18 +908,24 @@ export default function DailyHygieneCheckForm() {
           </>
         ) : (
           /* Step 2: Check-out */
-          <>
-            <div className="max-w-4xl mx-auto">
-              {/* 作業後のチェック */}
-              <div className="mb-8">
-                <CompactCheckboxSection
-                  title="作業後のチェック"
-                  items={postWorkChecks}
-                  setItems={setPostWorkChecks}
-                  headerColor="teal"
-                  icon={ClipboardCheck}
-                />
-              </div>
+          <><div className="max-w-4xl mx-auto">
+            {/* 👤 従業員名の表示（退勤チェック時のみ） */}
+            <div className="text-center text-3xl font-semibold mb-4">
+              👤 {mockEmployees.find(emp => emp.code === basicInfo.employee)?.name || "従業員名未設定"}
+            </div>
+
+            {/* 作業後のチェック */}
+            <div className="mb-8">
+              <CompactCheckboxSection
+                title="作業後のチェック"
+                items={postWorkChecks}
+                setItems={setPostWorkChecks}
+                headerColor="teal"
+                icon={ClipboardCheck}
+              />
+            </div>
+
+
 
               {/* 所長又は責任者の確認
               <div className="mb-8">
