@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { JSX, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,17 +18,14 @@ import { AlertCircle } from "lucide-react";
 import { mockBranches } from "@/data";
 import { TODAY_STR } from "@/data/mockDate";
 
-// const todayStr = "2025-08-01"; ←これを削除して
-const todayStr = TODAY_STR;
-
-
-export default function LoginForm() {
+export default function LoginForm(): JSX.Element {
   const [officeCode, setOfficeCode] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const navigate = useNavigate();
 
+  const todayStr = TODAY_STR;
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -37,26 +34,25 @@ export default function LoginForm() {
       return;
     }
 
-    // ✅ モックデータから営業所を検索
+    // モックデータから営業所を検索
     const branch = mockBranches.find((b) => b.code === officeCode);
-
     if (!branch) {
       setError("営業所コードが見つかりません");
       return;
     }
-
     if (branch.password !== password) {
       setError("パスワードが間違っています");
       return;
     }
 
-    // 認証成功
+    // 認証成功：保存（同一日OK 方式）
     setError("");
     localStorage.setItem("isLoggedIn", "true");
-    localStorage.setItem("loginDate", new Date(TODAY_STR).toDateString());
+    localStorage.setItem("loginDate", new Date(TODAY_STR).toISOString().slice(0, 10)); // YYYY-MM-DD
     localStorage.setItem("branchCode", branch.code);
 
-    navigate("/dashboard");
+    // ダッシュボードへ（戻るでログインに戻らないよう replace）
+    navigate("/dashboard", { replace: true });
   };
 
   return (
@@ -74,9 +70,10 @@ export default function LoginForm() {
               <Input
                 id="officeCode"
                 type="text"
-                placeholder="例：AB1234"
+                placeholder="例：YK1234"
                 value={officeCode}
                 onChange={(e) => setOfficeCode(e.target.value)}
+                autoComplete="username"
               />
             </div>
 
@@ -88,6 +85,7 @@ export default function LoginForm() {
                 placeholder="例：1234"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
               />
             </div>
 
@@ -98,7 +96,7 @@ export default function LoginForm() {
               </Alert>
             )}
 
-            <Button type="submit" className="w-full h-12 bg-blue-600 text-white">
+            <Button type="submit" className="w-full h-12">
               ログイン
             </Button>
           </form>
