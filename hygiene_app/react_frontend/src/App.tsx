@@ -1,21 +1,27 @@
-import { useEffect, useState } from "react"
-import { BrowserRouter as Router, Routes, Route, useNavigate } from "react-router-dom"
-import LoginForm from "@/app/login/LoginPage"
-import HygieneDashboard from "@/app/dashboard/DashboardPage"
-import DailyHygieneCheckForm from "@/app/form/HygieneCheckFormPage"
-import HygieneManagement from "@/app/management/ManagementPage"
-import PrivateRoute from "@/components/PrivateRoute"
+// src/App.tsx
+'use client'
 
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 
+// ページ/コンポーネント
+import LoginForm from '@/app/login/LoginPage'
+import HygieneDashboard from '@/app/dashboard/DashboardPage'
+import DailyHygieneCheckForm from '@/app/form/HygieneCheckFormPage'
+import HygieneManagement from '@/app/management/ManagementPage'
+import PrivateRoute from '@/components/PrivateRoute'
+import { EmployeeList } from '@/components/EmployeeList'
 
-function App() {
+export default function App() {
   return (
     <Router>
       <Routes>
-        {/* ログインページ */}
+        {/* ルート直叩き → ログインへ */}
+        <Route path="/" element={<Navigate to="/login" replace />} />
+
+        {/* ログイン（非保護） */}
         <Route path="/login" element={<LoginForm />} />
 
-        {/* ダッシュボード */}
+        {/* ダッシュボード（保護） */}
         <Route
           path="/dashboard"
           element={
@@ -25,7 +31,7 @@ function App() {
           }
         />
 
-        {/* 日次記録入力 */}
+        {/* 日次記録入力（保護） */}
         <Route
           path="/form"
           element={
@@ -35,7 +41,7 @@ function App() {
           }
         />
 
-        {/* 管理者画面 */}
+        {/* 管理者画面（保護・ラッパー経由で必要なコールバック注入） */}
         <Route
           path="/management"
           element={
@@ -45,27 +51,36 @@ function App() {
           }
         />
 
-        {/* どこにもマッチしない場合はログインへ */}
-        <Route path="*" element={<LoginForm />} />
+        {/* 従業員一覧（保護） */}
+        <Route
+          path="/employees"
+          element={
+            <PrivateRoute>
+              <EmployeeList onBack={() => history.back()} />
+            </PrivateRoute>
+          }
+        />
+
+        {/* 不明パス → ログインへ */}
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </Router>
   )
 }
 
-export default App
-
-// 🔽 必要な props を補完して管理画面に渡すラッパー
+/** 管理画面のイベントをルーティングに接続するラッパー */
 function HygieneManagementWrapper() {
   const navigate = useNavigate()
 
   return (
     <HygieneManagement
       onEmployeeListClick={() => {
-        console.log("従業員一覧クリック")
-        // ここで別ページに遷移するなら navigate("/something")
+        // 管理画面から従業員一覧へ
+        navigate('/employees')
       }}
       onBackToDashboard={() => {
-        navigate("/dashboard")
+        // 管理画面からダッシュボードへ戻る
+        navigate('/dashboard')
       }}
     />
   )
