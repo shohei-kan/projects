@@ -1,21 +1,20 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { Search, Plus, Edit, Trash2, ArrowLeft,X } from 'lucide-react'
+import { Search, Plus, Edit, Trash2, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger,DialogClose } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
-  AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
@@ -26,19 +25,43 @@ import { Label } from '@/components/ui/label'
 import { mockEmployees, mockBranches } from '@/data'
 import type { Employee as MockEmployee } from '@/data'
 
-
 /* =========================
-   UI 用 共通クラス（サイズ統一）
+   UI 共通クラス（サイズ/見た目統一）
    ========================= */
-const fieldBase =
-  "w-full h-10 rounded-lg border border-gray-200 bg-gray-100 text-gray-700 text-sm leading-none focus-visible:outline-none";
-const inputPlainClass = `${fieldBase} placeholder:text-gray-400 px-3 focus-visible:ring-2 focus-visible:ring-blue-200`;
-const triggerClass    = `${fieldBase} justify-between px-3 focus-visible:ring-2 focus-visible:ring-blue-200`;
-const contentClass    = "rounded-xl bg-white ring-1 ring-gray-200 shadow-xl p-1 min-w-[var(--radix-select-trigger-width)]";
-const itemClass       = "rounded-md px-3 py-2 text-[14px] outline-none cursor-pointer data-[highlighted]:bg-gray-100 data-[state=checked]:bg-gray-100 data-[state=checked]:font-medium";
-const inputClass = `${fieldBase} placeholder:text-gray-400 pl-10` // ← 検索アイコン分の左padding
-const rowClass =
-  "border-b border-gray-100 transition-colors hover:!bg-gray-50 focus-within:bg-gray-50";
+// ==== 完全固定（height 44px 相当）=========================
+// === 検索UI用（高さは44px固定） ======================
+const CONTROL_H = '!h-8 !min-h-8'
+const TEXT = 'text-[15px] leading-[1.25rem]'
+
+const base = `w-full ${CONTROL_H} ${TEXT} rounded-xl border border-gray-200 bg-gray-100 focus-visible:outline-none`
+
+export const inputPlain = `${base} px-3 py-0 placeholder:text-gray-400`
+export const inputWithIcon = `${base} pl-11 pr-10 py-0 placeholder:text-gray-400` // ← アイコン+クリアボタン分
+
+export const selectTrigger = `${base} px-3 py-0 flex items-center justify-between data-[placeholder]:text-gray-400`
+
+// 虫眼鏡の“丸いチップ”
+const iconChip =
+  'pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center ' +
+  'w-7 h-7 rounded-full bg-white/80 border border-gray-200 text-gray-500 shadow-[inset_0_1px_0_rgba(0,0,0,0.03)]'
+
+// クリア（×）ボタン
+const clearBtn =
+  'absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-7 h-7 rounded-full ' +
+  'text-gray-500 hover:bg-gray-200/60 active:bg-gray-200'
+
+// Select のポップアップ
+export const contentClass =
+  'z-[70] rounded-xl bg-white ring-1 ring-gray-200 shadow-xl p-1 min-w-[var(--radix-select-trigger-width)]'
+
+export const itemClass =
+  'rounded-md px-3 py-2 text-[14px] outline-none cursor-pointer data-[highlighted]:bg-gray-100 data-[state=checked]:bg-gray-100 data-[state=checked]:font-medium'
+
+  // Figma風の白パネル（柔らかい影＋半透明背景）
+const panelClass =
+  'rounded-2xl border border-gray-200 bg-white/80 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_8px_24px_rgba(0,0,0,0.04)] ' +
+  'backdrop-blur supports-[backdrop-filter]:bg-white/60'
+
 /* =========================
    型
    ========================= */
@@ -64,7 +87,7 @@ const toPositionLabel = (pos: MockEmployee['position']): Position => {
     case 'general':
       return '一般'
     case 'branch_admin':
-      return '所長' // = 営業所管理者（表記変更OK）
+      return '所長'
     case 'manager':
       return '本部'
   }
@@ -87,7 +110,7 @@ const initialEmployees: EmployeeRow[] = mockEmployees.map((m) => ({
 const officeNames = Array.from(new Set(mockBranches.map((b) => b.name)))
 const officeOptions = [{ value: 'all', label: '全営業所' }, ...officeNames.map((n) => ({ value: n, label: n }))] as const
 
-// 役職フィルター（“副所長”は任意で残してある）
+// 役職フィルター
 const positionOptions: Array<{ value: 'all' | Position; label: string }> = [
   { value: 'all', label: '全役職' },
   { value: '一般', label: '一般' },
@@ -95,6 +118,44 @@ const positionOptions: Array<{ value: 'all' | Position; label: string }> = [
   { value: '所長', label: '所長' },
   { value: '本部', label: '本部' },
 ]
+
+/* =========================
+   バリデーション（Add & Edit）
+   ========================= */
+type AddErrors = { name?: string; personalCode?: string; office?: string; position?: string }
+const validateNewEmployee = (e: Partial<EmployeeRow>, existing: EmployeeRow[]): AddErrors => {
+  const errors: AddErrors = {}
+  if (!e.name || !e.name.trim()) errors.name = '氏名は必須です'
+  else if (e.name.trim().length < 2) errors.name = '2文字以上で入力してください'
+
+  const code = (e.personalCode ?? '').trim()
+  if (!code) errors.personalCode = '個人コードは必須です'
+  else if (!/^\d{6}$/.test(code)) errors.personalCode = '6桁の数字で入力してください'
+  else if (existing.some((emp) => emp.personalCode === code)) errors.personalCode = 'この個人コードは既に使われています'
+
+  if (!e.office) errors.office = '営業所を選択してください'
+  if (!e.position) errors.position = '役職を選択してください'
+  return errors
+}
+
+type EditErrors = { name?: string; personalCode?: string; office?: string; position?: string }
+const validateEditEmployee = (e: EmployeeRow | null, existing: EmployeeRow[]): EditErrors => {
+  const errors: EditErrors = {}
+  if (!e) return errors
+
+  if (!e.name || !e.name.trim()) errors.name = '氏名は必須です'
+  else if (e.name.trim().length < 2) errors.name = '2文字以上で入力してください'
+
+  const code = (e.personalCode ?? '').trim()
+  if (!/^\d{6}$/.test(code)) errors.personalCode = '6桁の数字で入力してください'
+  else if (existing.some((emp) => emp.personalCode === code && emp.id !== e.id))
+    errors.personalCode = 'この個人コードは既に使われています'
+
+  if (!e.office) errors.office = '営業所を選択してください'
+  if (!e.position) errors.position = '役職を選択してください'
+
+  return errors
+}
 
 /* =========================
    本体
@@ -105,11 +166,11 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
   const [selectedOffice, setSelectedOffice] = useState<'all' | string>('all')
   const [selectedPosition, setSelectedPosition] = useState<'all' | Position>('all')
 
-  // 検索入力（氏名 / 個人コード）
+  // 検索
   const [nameQuery, setNameQuery] = useState('')
   const [codeQuery, setCodeQuery] = useState('')
 
-  // 追加/編集モーダル
+  // モーダル
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState<EmployeeRow | null>(null)
@@ -120,6 +181,14 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
     position: '一般',
   })
 
+  // エラー算出
+  const addErrors = useMemo(() => validateNewEmployee(newEmployee, employees), [newEmployee, employees])
+  const canSubmitAdd = Object.keys(addErrors).length === 0
+
+  const editErrors = useMemo(() => validateEditEmployee(editingEmployee, employees), [editingEmployee, employees])
+  const canSubmitEdit = !!editingEmployee && Object.keys(editErrors).length === 0
+
+  // 絞り込み
   const filteredEmployees = useMemo(() => {
     return employees.filter((e) => {
       if (selectedOffice !== 'all' && e.office !== selectedOffice) return false
@@ -131,29 +200,28 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
   }, [employees, selectedOffice, selectedPosition, nameQuery, codeQuery])
 
   const getPositionBadge = (position: Position) => {
-  const variants: Record<Position, string> = {
-    本部:  'bg-violet-50 text-violet-700 border border-violet-200',
-    所長:  'bg-rose-50 text-rose-700 border border-rose-200',
-    副所長:'bg-amber-50 text-amber-700 border border-amber-200',
-    一般:  'bg-slate-50 text-slate-700 border border-slate-200',
+    const variants: Record<Position, string> = {
+      本部: 'bg-violet-50 text-violet-700 border border-violet-200',
+      所長: 'bg-rose-50 text-rose-700 border border-rose-200',
+      副所長: 'bg-amber-50 text-amber-700 border border-amber-200',
+      一般: 'bg-slate-50 text-slate-700 border border-slate-200',
+    }
+    return (
+      <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${variants[position]}`}>
+        {position}
+      </Badge>
+    )
   }
-  return (
-    <Badge
-      variant="outline"
-      className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${variants[position]}`}
-    >
-      {position}
-    </Badge>
-  )
-}
 
-  /* ---------- CRUD handlers ---------- */
+  /* ---------- CRUD ---------- */
   const handleAddEmployee = () => {
-    if (!newEmployee.name || !newEmployee.personalCode || !newEmployee.office) return
+    const errors = validateNewEmployee(newEmployee, employees)
+    if (Object.keys(errors).length > 0) return
+
     const row: EmployeeRow = {
       id: `emp-${Date.now()}`,
-      name: newEmployee.name!,
-      personalCode: newEmployee.personalCode!,
+      name: newEmployee.name!.trim(),
+      personalCode: newEmployee.personalCode!.trim(),
       office: newEmployee.office!,
       position: (newEmployee.position ?? '一般') as Position,
     }
@@ -169,7 +237,15 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
 
   const handleUpdateEmployee = () => {
     if (!editingEmployee) return
-    setEmployees((prev) => prev.map((e) => (e.id === editingEmployee.id ? editingEmployee : e)))
+    const errs = validateEditEmployee(editingEmployee, employees)
+    if (Object.keys(errs).length > 0) return
+
+    const updated: EmployeeRow = {
+      ...editingEmployee,
+      name: editingEmployee.name.trim(),
+      personalCode: editingEmployee.personalCode.trim(),
+    }
+    setEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)))
     setEditingEmployee(null)
     setIsEditModalOpen(false)
   }
@@ -194,7 +270,13 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
             </div>
           </div>
 
-          <Dialog open={isAddModalOpen} onOpenChange={setIsAddModalOpen}>
+          <Dialog
+            open={isAddModalOpen}
+            onOpenChange={(open) => {
+              setIsAddModalOpen(open)
+              if (!open) setNewEmployee({ name: '', personalCode: '', office: '', position: '一般' })
+            }}
+          >
             <DialogTrigger asChild>
               <Button
                 variant="outline"
@@ -204,20 +286,18 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                 新規登録
               </Button>
             </DialogTrigger>
-            <DialogContent
-            
-            className="sm:max-w-md rounded-2xl border border-gray-200 shadow-2xl p-0 bg-white">
 
-            {/* ヘッダー */}
-            <DialogHeader className="px-6 pt-5 pb-3">
-              <DialogTitle className="text-lg font-semibold text-gray-800">
-                新規従業員登録
-              </DialogTitle>
-              <DialogDescription className="sr-only">
-                従業員情報を入力して登録します。
-              </DialogDescription>
-            </DialogHeader>
+            <DialogContent
+              aria-describedby={undefined}
+              className="z-[60] sm:max-w-md rounded-2xl border border-gray-200 shadow-2xl p-0 bg-white"
+            >
+              <DialogHeader className="px-6 pt-5 pb-3">
+                <DialogTitle className="text-lg font-semibold text-gray-800">新規従業員登録</DialogTitle>
+                <DialogDescription className="sr-only">従業員情報を入力して登録します。</DialogDescription>
+              </DialogHeader>
+
               <div className="px-6 pb-4 space-y-4">
+                {/* 氏名 */}
                 <div className="space-y-2">
                   <Label htmlFor="add-name">氏名</Label>
                   <Input
@@ -225,27 +305,36 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                     placeholder="従業員名を入力"
                     value={newEmployee.name || ''}
                     onChange={(e) => setNewEmployee((p) => ({ ...p, name: e.target.value }))}
-                    className={inputPlainClass}
+                    className={`${inputPlain} ${addErrors.name ? 'border-red-300 focus-visible:ring-red-200' : ''}`}
                   />
+                  {addErrors.name && <p className="mt-1 text-xs text-red-600">{addErrors.name}</p>}
                 </div>
+
+                {/* 個人コード */}
                 <div className="space-y-2">
                   <Label htmlFor="add-code">個人コード</Label>
                   <Input
                     id="add-code"
                     placeholder="6桁の個人コード"
                     value={newEmployee.personalCode || ''}
-                    onChange={(e) => setNewEmployee((p) => ({ ...p, personalCode: e.target.value }))}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 6)
+                      setNewEmployee((p) => ({ ...p, personalCode: digits }))
+                    }}
                     maxLength={6}
-                    className={inputPlainClass}
+                    className={`${inputPlain} ${addErrors.personalCode ? 'border-red-300 focus-visible:ring-red-200' : ''}`}
                   />
+                  {addErrors.personalCode && <p className="mt-1 text-xs text-red-600">{addErrors.personalCode}</p>}
                 </div>
+
+                {/* 営業所 */}
                 <div className="space-y-2">
                   <Label htmlFor="add-office">営業所</Label>
                   <Select value={newEmployee.office || ''} onValueChange={(v) => setNewEmployee((p) => ({ ...p, office: v }))}>
-                    <SelectTrigger className={`${triggerClass} focus:outline-none focus-visible:outline-none`} >
+                    <SelectTrigger className={`${selectTrigger} ${addErrors.office ? 'border-red-300 focus-visible:ring-red-200' : ''}`}>
                       <SelectValue placeholder="営業所を選択" />
                     </SelectTrigger>
-                    <SelectContent className={`${contentClass} z-[70]`}>
+                    <SelectContent position="popper" className={contentClass}>
                       {officeOptions
                         .filter((o) => o.value !== 'all')
                         .map((o) => (
@@ -255,17 +344,20 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                         ))}
                     </SelectContent>
                   </Select>
+                  {addErrors.office && <p className="mt-1 text-xs text-red-600">{addErrors.office}</p>}
                 </div>
+
+                {/* 役職 */}
                 <div className="space-y-2">
                   <Label htmlFor="add-position">役職</Label>
                   <Select
                     value={(newEmployee.position as Position) || '一般'}
                     onValueChange={(v) => setNewEmployee((p) => ({ ...p, position: v as Position }))}
                   >
-                    <SelectTrigger className={`${triggerClass} focus:outline-none focus-visible:outline-none`} >
+                    <SelectTrigger className={`${selectTrigger} ${addErrors.position ? 'border-red-300 focus-visible:ring-red-200' : ''}`}>
                       <SelectValue placeholder="役職を選択" />
                     </SelectTrigger>
-                    <SelectContent className={`${contentClass} z-[70]`}>
+                    <SelectContent position="popper" className={contentClass}>
                       {positionOptions
                         .filter((p) => p.value !== 'all')
                         .map((p) => (
@@ -275,15 +367,23 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                         ))}
                     </SelectContent>
                   </Select>
+                  {addErrors.position && <p className="mt-1 text-xs text-red-600">{addErrors.position}</p>}
                 </div>
               </div>
+
               <div className="flex justify-end gap-2 px-6 pb-6">
-                <Button variant="outline" onClick={() => setIsAddModalOpen(false)}
-                  className="h-9 rounded-lg border-gray-300 text-gray-700 bg-white hover:bg-gray-50">
+                <Button
+                  variant="outline"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="h-9 rounded-lg border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+                >
                   キャンセル
                 </Button>
-                <Button onClick={handleAddEmployee}
-                  className="h-9 rounded-lg bg-gray-900 text-white hover:bg-gray-800">
+                <Button
+                  onClick={handleAddEmployee}
+                  disabled={!canSubmitAdd}
+                  className="h-9 rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                   登録
                 </Button>
               </div>
@@ -292,20 +392,20 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
         </div>
 
         {/* Filters */}
-        <Card className="rounded-2xl border border-gray-200 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base text-gray-800">フィルター＆検索</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
+        <Card className={panelClass}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base text-gray-800">フィルター＆検索</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
               {/* 営業所フィルター */}
               <div className="space-y-2 min-w-0">
                 <Label>営業所フィルター</Label>
                 <Select value={selectedOffice} onValueChange={(v) => setSelectedOffice(v)}>
-                  <SelectTrigger className={triggerClass}>
+                  <SelectTrigger className={selectTrigger}>
                     <SelectValue placeholder="全営業所" />
                   </SelectTrigger>
-                  <SelectContent className={`${contentClass} z-[70]`}>
+                  <SelectContent position="popper" className={contentClass}>
                     {officeOptions.map((o) => (
                       <SelectItem key={o.value} value={o.value} className={itemClass}>
                         {o.label}
@@ -319,10 +419,10 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
               <div className="space-y-2 min-w-0">
                 <Label>役職フィルター</Label>
                 <Select value={selectedPosition} onValueChange={(v) => setSelectedPosition(v as 'all' | Position)}>
-                  <SelectTrigger className={triggerClass}>
+                  <SelectTrigger className={selectTrigger}>
                     <SelectValue placeholder="全役職" />
                   </SelectTrigger>
-                  <SelectContent className={`${contentClass} z-[70]`}>
+                  <SelectContent position="popper" className={contentClass}>
                     {positionOptions.map((p) => (
                       <SelectItem key={p.value} value={p.value} className={itemClass}>
                         {p.label}
@@ -342,7 +442,7 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                     placeholder="氏名で検索"
                     value={nameQuery}
                     onChange={(e) => setNameQuery(e.target.value)}
-                    className={inputClass}
+                    className={inputWithIcon}
                   />
                 </div>
               </div>
@@ -357,7 +457,7 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                     placeholder="個人コードで検索"
                     value={codeQuery}
                     onChange={(e) => setCodeQuery(e.target.value)}
-                    className={inputClass}
+                    className={inputWithIcon}
                   />
                 </div>
               </div>
@@ -366,33 +466,39 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
         </Card>
 
         {/* Results summary */}
-        <div className="flex items-center justify-between text-sm text-gray-500">
-          <span>{filteredEmployees.length}件の従業員が見つかりました</span>
-          <span>最終更新: {new Date().toLocaleString('ja-JP')}</span>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-500">{filteredEmployees.length}件の従業員が見つかりました</span>
+          <span className="text-xs text-gray-400">最終更新: {new Date().toLocaleString('ja-JP')}</span>
         </div>
 
+
         {/* Table */}
-        <Card>
+        <Card className={panelClass}>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table className="table-fixed text-[14px]">
-                      <TableHeader className="sticky top-0 z-10 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/60">
-                        <TableRow className="bg-gray-50 hover:bg-gray-50 [&>th]:py-3 [&>th]:text-gray-700">
-                          <TableHead className="w-[18ch] font-semibold">氏名</TableHead>
-                          <TableHead className="w-[12ch] font-semibold">個人コード</TableHead>
-                          <TableHead className="w-[24ch] font-semibold">営業所名</TableHead>
-                          <TableHead className="w-[10ch] font-semibold">役職</TableHead>
-                          <TableHead className="w-[16ch] text-center font-semibold">操作</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody className="
-                          [&_tr]:border-b [&_tr]:border-gray-100
-                          [&_tr]:transition-colors
-                          [&_tr:hover]:!bg-gray-100
-                          [&_tr:focus-within]:!bg-gray-100
-                        ">
-                        {filteredEmployees.map((row) => (
-                          <TableRow key={row.id} >
+                <TableHeader className="sticky top-0 z-10 bg-white/92 backdrop-blur supports-[backdrop-filter]:bg-white/75 border-b border-gray-200">
+                  <TableRow className="[&>th]:py-3 [&>th]:text-gray-600 [&>th]:text-[13px] [&>th]:tracking-wide bg-transparent">
+                    <TableHead className="w-[18ch] font-semibold">氏名</TableHead>
+                    <TableHead className="w-[12ch] font-semibold">個人コード</TableHead>
+                    <TableHead className="w-[24ch] font-semibold">営業所名</TableHead>
+                    <TableHead className="w-[10ch] font-semibold">役職</TableHead>
+                    <TableHead className="w-[16ch] text-center font-semibold">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+
+
+                <TableBody
+                  className="
+                    [&_tr]:border-b [&_tr]:border-gray-100
+                    [&_tr]:transition-colors
+                    [&_tr:hover]:!bg-slate-50
+                    [&_tr:nth-child(even)]:bg-slate-50/30
+                  "
+                >
+
+                  {filteredEmployees.map((row) => (
+                    <TableRow key={row.id}>
                       <TableCell className="font-medium truncate" title={row.name}>
                         <span className="inline-block max-w-[24ch] truncate">{row.name}</span>
                       </TableCell>
@@ -403,40 +509,51 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                       <TableCell>{getPositionBadge(row.position)}</TableCell>
                       <TableCell className="text-center">
                         <div className="flex justify-center gap-1.5">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleEditEmployee(row)}
-                              className="h-8 px-2 text-gray-600 hover:bg-gray-100"
-                            >
-                              <Edit className="h-4 w-4 mr-1" />
-                              編集
-                            </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEditEmployee(row)}
+                            className="h-8 px-2 text-gray-600 hover:bg-gray-100"
+                          >
+                            <Edit className="h-4 w-4 mr-1" />
+                            編集
+                          </Button>
 
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-8 px-2 text-red-600 hover:bg-red-50"
-                                >
-                                  <Trash2 className="h-4 w-4 mr-1" />
-                                  削除
-                                </Button>
-                              </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>従業員を削除しますか？</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  {row.name}さんを削除します。この操作は取り消せません。
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-8 px-2 text-red-600 hover:bg-red-50">
+                                <Trash2 className="h-4 w-4 mr-1" />
+                                削除
+                              </Button>
+                            </AlertDialogTrigger>
+
+                            <AlertDialogContent
+                              aria-describedby={undefined}
+                              className="z-[70] w-[90vw] max-w-md rounded-2xl border border-gray-200 bg-white p-0 shadow-2xl"
+                            >
+                              <AlertDialogHeader className="px-6 pt-5 pb-3">
+                                <AlertDialogTitle className="text-lg font-semibold text-gray-800">
+                                  従業員を削除しますか？
+                                </AlertDialogTitle>
+                                <AlertDialogDescription className="text-gray-500">
+                                  <span className="font-medium text-gray-700">{row.name}</span> さんを削除します。 この操作は取り消せません。
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>キャンセル</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => handleDeleteEmployee(row.id)} className="bg-red-600 hover:bg-red-700">
+
+                              <div className="px-6 pb-6 flex justify-end gap-2">
+                                <AlertDialogCancel
+                                  autoFocus
+                                  className="h-9 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-gray-300"
+                                >
+                                  キャンセル
+                                </AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => handleDeleteEmployee(row.id)}
+                                  className="h-9 rounded-lg bg-red-600 text-white hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-300"
+                                >
                                   削除
                                 </AlertDialogAction>
-                              </AlertDialogFooter>
+                              </div>
                             </AlertDialogContent>
                           </AlertDialog>
                         </div>
@@ -467,78 +584,106 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
             </DialogHeader>
 
             <div className="px-6 pb-4 space-y-4">
+              {/* 氏名 */}
               <div className="space-y-2">
                 <Label htmlFor="edit-name">氏名</Label>
                 <Input
                   id="edit-name"
-                  value={editingEmployee?.name ?? ""}
-                  onChange={(e) => setEditingEmployee(prev => prev ? { ...prev, name: e.target.value } : prev)}
-                  className={inputPlainClass}
+                  value={editingEmployee?.name ?? ''}
+                  onChange={(e) => setEditingEmployee((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                  className={`${inputPlain} ${editErrors.name ? 'border-red-300 focus-visible:ring-red-200' : ''}`}
                 />
+                {editErrors.name && <p className="mt-1 text-xs text-red-600">{editErrors.name}</p>}
               </div>
 
+              {/* 個人コード */}
               <div className="space-y-2">
                 <Label htmlFor="edit-code">個人コード</Label>
                 <Input
                   id="edit-code"
-                  value={editingEmployee?.personalCode ?? ""}
-                  onChange={(e) => setEditingEmployee(prev => prev ? { ...prev, personalCode: e.target.value } : prev)}
+                  value={editingEmployee?.personalCode ?? ''}
+                  onChange={(e) =>
+                    setEditingEmployee((prev) =>
+                      prev ? { ...prev, personalCode: e.target.value.replace(/\D/g, '').slice(0, 6) } : prev
+                    )
+                  }
                   maxLength={6}
-                  className={inputPlainClass}
+                  className={`${inputPlain} ${editErrors.personalCode ? 'border-red-300 focus-visible:ring-red-200' : ''}`}
                 />
+                {editErrors.personalCode && <p className="mt-1 text-xs text-red-600">{editErrors.personalCode}</p>}
               </div>
 
+              {/* 営業所 */}
               <div className="space-y-2">
                 <Label htmlFor="edit-office">営業所</Label>
                 <Select
-                  value={editingEmployee?.office ?? ""}
-                  onValueChange={(v) => setEditingEmployee(prev => prev ? { ...prev, office: v } : prev)}
+                  value={editingEmployee?.office ?? ''}
+                  onValueChange={(v) => setEditingEmployee((prev) => (prev ? { ...prev, office: v } : prev))}
                 >
-                  <SelectTrigger id="edit-office" className={triggerClass}>
+                  <SelectTrigger
+                    id="edit-office"
+                    className={`${selectTrigger} ${editErrors.office ? 'border-red-300 focus-visible:ring-red-200' : ''}`}
+                  >
                     <SelectValue placeholder="営業所を選択" />
                   </SelectTrigger>
-                  <SelectContent position="popper" className={`${contentClass} z-[70]`}>
-                    {officeOptions.filter(o => o.value !== "all").map(o => (
-                      <SelectItem key={o.value} value={o.value} className={itemClass}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
+                  <SelectContent position="popper" className={contentClass}>
+                    {officeOptions
+                      .filter((o) => o.value !== 'all')
+                      .map((o) => (
+                        <SelectItem key={o.value} value={o.value} className={itemClass}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
+                {editErrors.office && <p className="mt-1 text-xs text-red-600">{editErrors.office}</p>}
               </div>
 
+              {/* 役職 */}
               <div className="space-y-2">
                 <Label htmlFor="edit-position">役職</Label>
                 <Select
-                  value={editingEmployee?.position ?? "一般"}
-                  onValueChange={(v) => setEditingEmployee(prev => prev ? { ...prev, position: v as Position } : prev)}
+                  value={editingEmployee?.position ?? '一般'}
+                  onValueChange={(v) => setEditingEmployee((prev) => (prev ? { ...prev, position: v as Position } : prev))}
                 >
-                  <SelectTrigger id="edit-position" className={triggerClass}>
+                  <SelectTrigger
+                    id="edit-position"
+                    className={`${selectTrigger} ${editErrors.position ? 'border-red-300 focus-visible:ring-red-200' : ''}`}
+                  >
                     <SelectValue placeholder="役職を選択" />
                   </SelectTrigger>
-                  <SelectContent position="popper" className={`${contentClass} z-[70]`}>
-                    {positionOptions.filter(p => p.value !== "all").map(p => (
-                      <SelectItem key={p.value} value={p.value} className={itemClass}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
+                  <SelectContent position="popper" className={contentClass}>
+                    {positionOptions
+                      .filter((p) => p.value !== 'all')
+                      .map((p) => (
+                        <SelectItem key={p.value} value={p.value} className={itemClass}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
+                {editErrors.position && <p className="mt-1 text-xs text-red-600">{editErrors.position}</p>}
               </div>
             </div>
 
             <div className="flex justify-end gap-2 px-6 pb-6">
-              <Button variant="outline" onClick={() => setIsEditModalOpen(false)}
-                className="h-9 rounded-lg border-gray-300 text-gray-700 bg-white hover:bg-gray-50">
+              <Button
+                variant="outline"
+                onClick={() => setIsEditModalOpen(false)}
+                className="h-9 rounded-lg border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
+              >
                 キャンセル
               </Button>
-              <Button onClick={handleUpdateEmployee} className="h-9 rounded-lg bg-gray-900 text-white hover:bg-gray-800">
+              <Button
+                onClick={handleUpdateEmployee}
+                disabled={!canSubmitEdit}
+                className="h-9 rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 更新
               </Button>
             </div>
           </DialogContent>
         </Dialog>
-
       </div>
     </div>
   )
