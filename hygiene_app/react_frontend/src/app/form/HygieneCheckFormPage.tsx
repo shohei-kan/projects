@@ -480,13 +480,13 @@ const recordItems = record
     className="absolute top-4 right-4 p-2 rounded-full hover:bg-gray-100 transition"
     aria-label="ホームへ"
   >
-    <Home className="w-5 h-5 text-gray-600" />
+    <Home className="w-8 h-8 text-gray-600" />
   </button>
 
         {/* Header with title and step indicator */}
         <div className="mb-6">
           <h1 className="text-2xl font-medium text-gray-900 mb-4">
-            日次衛生チェックフォーム
+            健康管理チェックフォーム
           </h1>
           
           {/* Step Indicator with Buttons */}
