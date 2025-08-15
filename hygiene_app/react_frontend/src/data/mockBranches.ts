@@ -20,7 +20,7 @@ export const mockBranches: Branch[] = [
   },
   {
     code: "TK9012",
-    name: "横浜市立馬場小学校",
+    name: "横浜市立緑小学校",
     password: "9012",
     created_at: "2025-07-10T09:00:00Z",
   },
