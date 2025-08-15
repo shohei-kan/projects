@@ -411,7 +411,7 @@ export default function HygieneDashboard() {
 
       {/* 管理者パスワード入力 */}
       <Dialog open={isPasswordModalOpen} onOpenChange={setIsPasswordModalOpen}>
-        <DialogContent>
+        <DialogContent className="bg-gray-100 rounded-2xl" >
           <DialogHeader>
             <DialogTitle>管理者認証</DialogTitle>
           </DialogHeader>
@@ -423,8 +423,8 @@ export default function HygieneDashboard() {
               onKeyPress={(e) => e.key === "Enter" && handlePasswordSubmit()}
               placeholder="パスワード"
             />
-            <div className="flex gap-2 justify-end">
-              <Button
+            <div className="flex gap-2 justify-end ">
+              <Button className="h-9 rounded-lg border-gray-300 text-gray-700 bg-white hover:bg-gray-50"
                 variant="outline"
                 onClick={() => {
                   setIsPasswordModalOpen(false);
@@ -433,7 +433,7 @@ export default function HygieneDashboard() {
               >
                 キャンセル
               </Button>
-              <Button onClick={handlePasswordSubmit}>認証</Button>
+              <Button className="h-9 rounded-lg bg-gray-900 text-white hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed" onClick={handlePasswordSubmit}>認証</Button>
             </div>
           </div>
         </DialogContent>
