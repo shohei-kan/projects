@@ -477,7 +477,7 @@ const recordItems = record
           {/* 右上の戻るボタン */}
   <button
     onClick={() => navigate("/dashboard")}
-    className="absolute top-4 right-4 p-2 rounded-full hover:bg-gray-100 transition"
+    className="absolute top-4 right-4 p-2 rounded-xl hover:bg-gray-100 transition"
     aria-label="ホームへ"
   >
     <Home className="w-8 h-8 text-gray-600" />
@@ -493,7 +493,7 @@ const recordItems = record
 <div className="flex items-center justify-center mb-4 space-x-4">
   <Button
     variant={currentStep === 1 ? "default" : "outline"}
-    className={`text-sm px-6 py-2 ${
+    className={`text-sm  rounded-xl px-6 py-2  ${
       currentStep === 1
         ? "bg-blue-600 text-white hover:bg-blue-700"
         : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
@@ -504,7 +504,7 @@ const recordItems = record
   </Button>
   <Button
     variant={currentStep === 2 ? "default" : "outline"}
-    className={`text-sm px-6 py-2 ${
+    className={`text-sm rounded-xl px-6 py-2 ${
       currentStep === 2
         ? "bg-blue-600 text-white hover:bg-blue-700"
         : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
@@ -568,7 +568,7 @@ const recordItems = record
                             date: e.target.value,
                           })
                         }
-                        className="border-gray-300 text-sm"
+                        className=" border-gray-300 rounded-xl text-sm"
                       />
                     </div>
                     {/* <div className="space-y-1">
@@ -600,8 +600,8 @@ const recordItems = record
 </SelectContent>
 
 </Select> */}
-<div className="space-y-1">
-  <span className="text-gray-900 text-sm">従業員名</span>
+<div className="space-y-1 ">
+  <span className="text-gray-900  text-sm">従業員名</span>
 
 <Listbox
   value={basicInfo.employee}
@@ -611,7 +611,7 @@ const recordItems = record
 >
   <div className="relative">
     <Listbox.Button
-      className={`relative w-full cursor-default rounded-md border px-3 py-2 text-left text-sm focus:outline-none ${
+      className={`relative w-full cursor-default rounded-xl border px-3 py-2 text-left text-sm focus:outline-none ${
         !basicInfo.employee
           ? "border-amber-300 bg-amber-50"
           : "border-gray-300 bg-white"
@@ -634,7 +634,7 @@ const recordItems = record
       leaveFrom="opacity-100"
       leaveTo="opacity-0"
     >
-      <Listbox.Options className="absolute z-[9999] mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+      <Listbox.Options className="absolute z-[9999] mt-1 max-h-60 w-full overflow-auto rounded-xl bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
         {employeesInOffice.map((employee) => (
           <Listbox.Option
             key={employee.code}
@@ -710,7 +710,7 @@ const recordItems = record
   >
     <div className="relative">
       <Listbox.Button
-        className={`relative w-full cursor-default rounded-md border px-3 py-2 text-left text-sm focus:outline-none ${
+        className={`relative w-full cursor-default rounded-xl border px-3 py-2 text-left text-sm focus:outline-none ${
           !basicInfo.supervisor
             ? "border-amber-300 bg-amber-50"
             : "border-gray-300 bg-white"
@@ -733,7 +733,7 @@ const recordItems = record
         leaveFrom="opacity-100"
         leaveTo="opacity-0"
       >
-        <Listbox.Options className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+        <Listbox.Options className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl bg-white py-1 text-sm shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
           {employeesInOffice.map((employee) => (
             <Listbox.Option
               key={employee.code}
