@@ -287,3 +287,136 @@ export async function getBranchExpectedPin(branchCode: string): Promise<string |
   const s = String(pinRaw);
   return /^\d+$/.test(s) ? s.padStart(4, "0") : s;
 }
+
+// ===== 管理画面：カテゴリ → ラベル/セクション辞書 =====
+export const CATEGORY_LABELS: Record<
+  string,
+  { label: string; section: string }
+> = {
+  temperature: { label: "体温", section: "体温・体調" },
+
+  no_health_issues: { label: "体調異常なし", section: "体温・体調" },
+  family_no_symptoms: { label: "同居者の症状なし", section: "体温・体調" },
+
+  no_respiratory_symptoms: { label: "咳・喉の腫れなし", section: "呼吸器" },
+
+  no_severe_hand_damage: { label: "手荒れ（重度）なし", section: "手指・爪" },
+  no_mild_hand_damage: { label: "手荒れ（軽度）なし", section: "手指・爪" },
+
+  nails_groomed: { label: "爪・ひげ整っている", section: "身だしなみ" },
+  proper_uniform: { label: "服装が正しい", section: "身だしなみ" },
+
+  no_work_illness: { label: "作業中の不調なし", section: "作業後" },
+  proper_handwashing: { label: "手洗い実施", section: "作業後" },
+};
+
+// ===== 管理画面：詳細取得（ラベル付きアイテム返却） =====
+export async function getRecordDetail(row: HygieneRecordRow): Promise<
+  HygieneRecordRow & {
+    comment: string;
+    items: {
+      category: string;
+      label: string;
+      section: string;
+      is_normal: boolean;
+      value: string | null;
+    }[];
+  }
+> {
+  // 該当レコード
+  const rec =
+    mockRecords.find(
+      (r) =>
+        r.employeeCode === row.employeeCode && r.date === row.date
+    ) ?? null;
+
+  const itemsRaw = rec
+    ? mockRecordItems.filter((i) => i.recordId === rec.id)
+    : [];
+
+  const items = itemsRaw.map((it) => {
+    const meta = CATEGORY_LABELS[it.category] ?? {
+      label: it.category,
+      section: "",
+    };
+    return {
+      category: it.category,
+      label: meta.label,
+      section: meta.section,
+      is_normal: !!it.is_normal,
+      value: it.value ?? null,
+    };
+  });
+
+  // 異常のコメントをざっくりまとめる（必要ならAPI化時に差し替え）
+  const comment =
+    items
+      .filter((i) => i.is_normal === false && i.value)
+      .map((i) => `${i.label}: ${i.value}`)
+      .join(" ／ ") || "";
+
+  return { ...row, comment, items };
+}
+
+// ===== 従業員一覧：アダプタAPI（ローカル保存でモックを上書き） =====
+export type EmployeePosition = "general" | "branch_admin" | "sub_manager" | "manager";
+export type EmployeeDTO = {
+  code: string;       // 個人コード（6桁）
+  name: string;
+  branchCode: string; // 営業所コード
+  position: EmployeePosition;
+};
+
+const EMP_STORE_KEY = "employees.snapshot.v1";
+
+// 事実上の「現在の名簿」を返す（localStorage があればそれ、なければモック）
+export async function listEmployees(): Promise<EmployeeDTO[]> {
+  const raw = localStorage.getItem(EMP_STORE_KEY);
+  if (raw) return JSON.parse(raw) as EmployeeDTO[];
+  // モックを EmployeeDTO として返す
+  return mockEmployees as EmployeeDTO[];
+}
+
+async function saveEmployees(all: EmployeeDTO[]) {
+  localStorage.setItem(EMP_STORE_KEY, JSON.stringify(all));
+}
+
+// 追加
+export async function createEmployee(newEmp: EmployeeDTO): Promise<EmployeeDTO> {
+  const all = await listEmployees();
+  if (all.some((e) => e.code === newEmp.code)) {
+    throw new Error("この個人コードは既に使われています");
+  }
+  const next = [...all, newEmp];
+  await saveEmployees(next);
+  return newEmp;
+}
+
+// 更新（code 変更も許可）
+export async function updateEmployee(code: string, patch: Partial<EmployeeDTO>): Promise<EmployeeDTO> {
+  const all = await listEmployees();
+  const idx = all.findIndex((e) => e.code === code);
+  if (idx < 0) throw new Error("対象の従業員が見つかりません");
+  const nextCode = patch.code ?? code;
+  if (nextCode !== code && all.some((e) => e.code === nextCode)) {
+    throw new Error("この個人コードは既に使われています");
+  }
+  const updated: EmployeeDTO = { ...all[idx], ...patch, code: nextCode };
+  const next = [...all];
+  next[idx] = updated;
+  await saveEmployees(next);
+  return updated;
+}
+
+// 削除
+export async function deleteEmployee(code: string): Promise<void> {
+  const all = await listEmployees();
+  const next = all.filter((e) => e.code !== code);
+  await saveEmployees(next);
+}
+
+// 営業所名 → 営業所コード
+export function getBranchCodeByOfficeName(name: string): string | null {
+  const b = mockBranches.find((x) => x.name === name);
+  return b ? b.code : null;
+}

@@ -1,62 +1,101 @@
-import { useMemo, useState } from 'react'
-import { UsersRound, Home,FileDown, FileText, ArrowLeft, Calendar, Search, AlertTriangle } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { TODAY_STR } from '@/data/mockDate'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+// src/app/management/HygieneManagement.tsx
+"use client";
 
-// アダプター（既存）
+import { useMemo, useState } from "react";
+import {
+  UsersRound,
+  Home,
+  // FileDown, FileText, ArrowLeft,
+  Calendar,
+  Search,
+  AlertTriangle,
+} from "lucide-react";
+
+import { TODAY_STR } from "@/data/mockDate";
+
+// UI
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+// ===== アダプター経由 =====
 import {
   getDailyRows,
   getMonthRows,
   getOfficeNames,
   getEmployeeNames,
   loadSupervisorConfirm,
+  setSupervisorConfirm,
   canConfirmRow,
+  CATEGORY_LABELS,
+  getRecordDetail,
   type HygieneRecordRow,
   type StatusJP,
-} from '@/lib/hygieneAdapter'
+} from "@/lib/hygieneAdapter";
 
-// モックAPI（mockRecordItems + カテゴリ辞書 連携）
-import { mockPatchConfirm, mockFetchDetail, mockHasAnyComment, mockLoadRecordItems } from '@/lib/hygieneMockApi'
-
-/* ======= Figma寄せの見た目トークン ======= */
+/* ======= 見た目トークン ======= */
 const fieldBase =
-  'h-10 w-full rounded-xl border text-sm leading-none focus-visible:outline-none focus-visible:ring-2'
-const fieldMuted =
-  'bg-gray-50 border-gray-200 text-gray-700 focus-visible:ring-blue-200'
-const triggerClass = `${fieldBase} ${fieldMuted} px-3 justify-between`
-const inputClass = `${fieldBase} ${fieldMuted} px-3`
-const inputWithIcon = `${fieldBase} ${fieldMuted} pl-10`
+  "h-10 w-full rounded-xl border text-sm leading-none focus-visible:outline-none focus-visible:ring-2";
+const fieldMuted = "bg-gray-50 border-gray-200 text-gray-700 focus-visible:ring-blue-200";
+const triggerClass = `${fieldBase} ${fieldMuted} px-3 justify-between`;
+const inputClass = `${fieldBase} ${fieldMuted} px-3`;
+const inputWithIcon = `${fieldBase} ${fieldMuted} pl-10`;
 const chipOff =
-  'h-9 rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+  "h-9 rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50";
 const chipOn =
-  'h-9 rounded-full bg-gray-400 text-white hover:bg-gray-300 border border-gray-900'
+  "h-9 rounded-full bg-gray-400 text-white hover:bg-gray-300 border border-gray-900";
 
 const statusBadge = (s: StatusJP) => {
   const map: Record<StatusJP, string> = {
-    出勤入力済: 'bg-blue-50 text-blue-700 border border-blue-200',
-    退勤入力済: 'bg-green-50 text-green-700 border border-green-200',
-    未入力: 'bg-slate-50 text-slate-700 border border-slate-200',
-  }
+    出勤入力済: "bg-blue-50 text-blue-700 border border-blue-200",
+    退勤入力済: "bg-green-50 text-green-700 border border-green-200",
+    未入力: "bg-slate-50 text-slate-700 border border-slate-200",
+  };
   return (
     <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 ${map[s]}`}>
       {s}
     </Badge>
-  )
-}
+  );
+};
+
+// カテゴリ配列 → 日本語ラベル配列
+const toAbnormalLabels = (cats: string[]) =>
+  cats.map((c) => CATEGORY_LABELS[c]?.label ?? c);
 
 export interface HygieneManagementProps {
-  onEmployeeListClick: () => void
-  onBackToDashboard: () => void
+  onEmployeeListClick: () => void;
+  onBackToDashboard: () => void;
 }
 
 export default function HygieneManagement({
@@ -64,77 +103,86 @@ export default function HygieneManagement({
   onBackToDashboard,
 }: HygieneManagementProps) {
   /* ---------- 表示モード ---------- */
-  const [mode, setMode] = useState<'daily' | 'monthly'>('daily')
+  const [mode, setMode] = useState<"daily" | "monthly">("daily");
 
   /* ---------- フィルター ---------- */
-  const officeNames = useMemo(() => getOfficeNames(), [])
-  const [selectedOffice, setSelectedOffice] = useState<string>(officeNames[0] ?? '')
+  const officeNames = useMemo(() => getOfficeNames(), []);
+  const [selectedOffice, setSelectedOffice] = useState<string>(officeNames[0] ?? "");
   const [selectedDate, setSelectedDate] = useState(
-    new Date(TODAY_STR).toISOString().slice(0, 10),
-  )
+    new Date(TODAY_STR).toISOString().slice(0, 10)
+  );
 
   // 個人月次の従業員選択（営業所連動で候補更新）
   const employeeOptions = useMemo(
     () => getEmployeeNames(selectedOffice),
-    [selectedOffice],
-  )
+    [selectedOffice]
+  );
   const [selectedEmployee, setSelectedEmployee] = useState<string>(
-    employeeOptions[0] ?? '',
-  )
+    employeeOptions[0] ?? ""
+  );
 
   // テキスト検索 & 絞り込みチップ
-  const [q, setQ] = useState('')
-  const [abnormalOnly, setAbnormalOnly] = useState(false)
-  const [commentOnly, setCommentOnly] = useState(false)
-  const [unsubmittedOnly, setUnsubmittedOnly] = useState(false)
+  const [q, setQ] = useState("");
+  const [abnormalOnly, setAbnormalOnly] = useState(false);
+  const [commentOnly, setCommentOnly] = useState(false);
+  const [unsubmittedOnly, setUnsubmittedOnly] = useState(false);
 
   // 責任者確認（ロール）
-  const [userRole] = useState<'hq_admin' | 'branch_manager'>('hq_admin')
-  const [userOffice] = useState<string | undefined>(undefined)
+  const [userRole] = useState<"hq_admin" | "branch_manager">("hq_admin");
+  const [userOffice] = useState<string | undefined>(undefined);
 
-  // ★ 再計算トリガ
-  const [confirmVersion, setConfirmVersion] = useState(0)
+  // 再計算トリガ（責任者確認反映）
+  const [confirmVersion, setConfirmVersion] = useState(0);
 
-  // ★ 詳細ダイアログの状態
-  const [detailOpen, setDetailOpen] = useState(false)
-  const [detail, setDetail] = useState<null | (HygieneRecordRow & { comment: string; items: { category: string; label: string; section: string; is_normal: boolean; value: string | null }[] })>(null)
+  // 詳細ダイアログの状態
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detail, setDetail] = useState<
+    | null
+    | (HygieneRecordRow & {
+        comment: string;
+        items: {
+          category: string;
+          label: string;
+          section: string;
+          is_normal: boolean;
+          value: string | null;
+        }[];
+      })
+  >(null);
 
-  // ★ データ取得（アダプター呼び出し）
+  // データ取得（アダプター呼び出し）
   const baseRows: HygieneRecordRow[] = useMemo(() => {
-    if (mode === 'daily') {
-      if (!selectedOffice || !selectedDate) return []
-      return getDailyRows(selectedOffice, selectedDate)
+    if (mode === "daily") {
+      if (!selectedOffice || !selectedDate) return [];
+      return getDailyRows(selectedOffice, selectedDate);
     }
-    if (!selectedEmployee) return []
-    return getMonthRows(selectedEmployee, TODAY_STR)
-  }, [mode, selectedOffice, selectedDate, selectedEmployee])
+    if (!selectedEmployee) return [];
+    return getMonthRows(selectedEmployee, TODAY_STR);
+  }, [mode, selectedOffice, selectedDate, selectedEmployee]);
 
-  // ★ localStorage の確認状態を反映
+  // localStorage の確認状態を反映
   const rows = useMemo(() => {
     return baseRows.map((r) => {
-      const saved = loadSupervisorConfirm(r.id)
-      return saved === undefined ? r : { ...r, supervisorConfirmed: saved }
-    })
-  }, [baseRows, confirmVersion])
+      const saved = loadSupervisorConfirm(r.id);
+      return saved === undefined ? r : { ...r, supervisorConfirmed: saved };
+    });
+  }, [baseRows, confirmVersion]);
 
-  // ★ 画面側のフィルター（コメントは実データで判定）
+  // 画面側のフィルター
   const filtered = useMemo(() => {
     return rows.filter((r) => {
-      if (q && !r.employeeName.includes(q)) return false
-      if (abnormalOnly && r.abnormalItems.length === 0) return false
-      if (commentOnly && !mockHasAnyComment(r)) return false
-      if (unsubmittedOnly && r.status !== '未入力') return false
-      return true
-    })
-  }, [rows, q, abnormalOnly, commentOnly, unsubmittedOnly])
-
-  const abnormalMark = (items: string[]) =>
-    items.length === 0 ? '' : items.some((x) => x.includes('温') || x.includes('発熱')) ? '🔴' : '⚠️'
+      if (q && !r.employeeName.includes(q)) return false;
+      if (abnormalOnly && r.abnormalItems.length === 0) return false;
+      if (commentOnly && !r.hasComment) return false; // ← r.hasComment を使用
+      if (unsubmittedOnly && r.status !== "未入力") return false;
+      return true;
+    });
+  }, [rows, q, abnormalOnly, commentOnly, unsubmittedOnly]);
 
   // 未確認の異常件数（上部アラートに使用）
   const abnormalUnconfirmedCount = filtered.filter(
-    (r) => r.abnormalItems.length > 0 && !r.supervisorConfirmed,
-  ).length
+    (r) => r.abnormalItems.length > 0 && !r.supervisorConfirmed
+  ).length;
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -153,17 +201,12 @@ export default function HygieneManagement({
               <UsersRound className="h-4 w-4" />
               従業員一覧
             </Button>
-            {/* <Button variant="outline" className="h-9 rounded-xl border-gray-300 text-gray-700 bg-white hover:bg-gray-50 gap-2">
-              <FileDown className="h-4 w-4" /> */}
-              {/* Excel出力
-            </Button>
-            <Button variant="outline" className="h-9 rounded-xl border-gray-300 text-gray-700 bg-white hover:bg-gray-50 gap-2">
-              <FileText className="h-4 w-4" />
-              PDF出力
-            </Button> */}
-            <Button variant="ghost" onClick={onBackToDashboard} className="h-9 rounded-xl text-gray-600 bg-gray-200 hover:bg-gray-100 gap-2">
+            <Button
+              variant="ghost"
+              onClick={onBackToDashboard}
+              className="h-9 rounded-xl text-gray-600 bg-gray-200 hover:bg-gray-100 gap-2"
+            >
               <Home className="h-10 w-10" />
-               
             </Button>
           </div>
         </div>
@@ -190,13 +233,20 @@ export default function HygieneManagement({
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
                     <div className="space-y-2 min-w-0">
                       <span className="text-sm font-medium">営業所</span>
-                      <Select value={selectedOffice} onValueChange={setSelectedOffice}>
+                      <Select
+                        value={selectedOffice}
+                        onValueChange={setSelectedOffice}
+                      >
                         <SelectTrigger className={triggerClass}>
                           <SelectValue placeholder="営業所を選択" />
                         </SelectTrigger>
-                        <SelectContent className="z-[60]  rounded-xl border bg-white border-gray-200 p-2 shadow-xl">
+                        <SelectContent className="z-[60] w-[200px] rounded-xl border bg-white border-gray-200 p-2 shadow-xl">
                           {officeNames.map((n) => (
-                            <SelectItem key={n} value={n} className="rounded-md px-3 py-1 text-[14px] data-[highlighted]:bg-gray-100">
+                            <SelectItem
+                              key={n}
+                              value={n}
+                              className=" rounded-md px-3 py-1 text-[14px] data-[highlighted]:bg-gray-100"
+                            >
                               {n}
                             </SelectItem>
                           ))}
@@ -237,17 +287,24 @@ export default function HygieneManagement({
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                     <div className="space-y-2 min-w-0">
                       <span className="text-sm font-medium">営業所</span>
-                      <Select value={selectedOffice} onValueChange={(v) => {
-                        setSelectedOffice(v)
-                        const list = getEmployeeNames(v)
-                        setSelectedEmployee(list[0] ?? '')
-                      }}>
+                      <Select
+                        value={selectedOffice}
+                        onValueChange={(v) => {
+                          setSelectedOffice(v);
+                          const list = getEmployeeNames(v);
+                          setSelectedEmployee(list[0] ?? "");
+                        }}
+                      >
                         <SelectTrigger className={triggerClass}>
                           <SelectValue placeholder="営業所を選択" />
                         </SelectTrigger>
-                        <SelectContent className="z-[60] rounded-xl border border-gray-200 p-1 shadow-xl">
+                        <SelectContent className="z-[60] w-[200px] bg-white rounded-xl border border-gray-200 p-1 shadow-xl">
                           {officeNames.map((n) => (
-                            <SelectItem key={n} value={n} className="rounded-md px-3 py-2 text-[14px] data-[highlighted]:bg-gray-100">
+                            <SelectItem
+                              key={n}
+                              value={n}
+                              className="rounded-md px-3 py-2 text-[14px] data-[highlighted]:bg-gray-100"
+                            >
                               {n}
                             </SelectItem>
                           ))}
@@ -257,13 +314,20 @@ export default function HygieneManagement({
 
                     <div className="space-y-2 min-w-0">
                       <span className="text-sm font-medium">従業員</span>
-                      <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
+                      <Select
+                        value={selectedEmployee}
+                        onValueChange={setSelectedEmployee}
+                      >
                         <SelectTrigger className={triggerClass}>
                           <SelectValue placeholder="従業員を選択" />
                         </SelectTrigger>
-                        <SelectContent className="z-[60] rounded-xl border border-gray-200 p-1 shadow-xl">
+                        <SelectContent className="z-[60] w-[200px] bg-white rounded-xl border border-gray-200 p-1 shadow-xl">
                           {employeeOptions.map((n) => (
-                            <SelectItem key={n} value={n} className="rounded-md px-3 py-2 text-[14px] data-[highlighted]:bg-gray-100">
+                            <SelectItem
+                              key={n}
+                              value={n}
+                              className="rounded-md px-3 py-2 text-[14px] data-[highlighted]:bg-gray-100"
+                            >
                               {n}
                             </SelectItem>
                           ))}
@@ -292,14 +356,29 @@ export default function HygieneManagement({
 
             {/* チップ */}
             <div className="flex flex-wrap gap-3">
-              <Button type="button" variant="outline" onClick={() => setAbnormalOnly((v) => !v)} className={abnormalOnly ? chipOn : chipOff}>
-                 異常のみ
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setAbnormalOnly((v) => !v)}
+                className={abnormalOnly ? chipOn : chipOff}
+              >
+                異常のみ
               </Button>
-              <Button type="button" variant="outline" onClick={() => setCommentOnly((v) => !v)} className={commentOnly ? chipOn : chipOff}>
-                 コメントあり
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCommentOnly((v) => !v)}
+                className={commentOnly ? chipOn : chipOff}
+              >
+                コメントあり
               </Button>
-              <Button type="button" variant="outline" onClick={() => setUnsubmittedOnly((v) => !v)} className={unsubmittedOnly ? chipOn : chipOff}>
-                 未入力のみ
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setUnsubmittedOnly((v) => !v)}
+                className={unsubmittedOnly ? chipOn : chipOff}
+              >
+                未入力のみ
               </Button>
             </div>
           </CardContent>
@@ -308,11 +387,15 @@ export default function HygieneManagement({
         {/* サマリー */}
         <div className="flex items-center justify-between text-sm text-gray-600">
           <span>
-            {mode === 'daily'
-              ? `${selectedOffice || '（未選択）'} ${new Date(selectedDate || TODAY_STR).toLocaleDateString('ja-JP')} の記録：${filtered.length}件`
-              : `${selectedEmployee || '（未選択）'} の今月の記録：${filtered.length}件`}
+            {mode === "daily"
+              ? `${selectedOffice || "（未選択）"} ${new Date(
+                  selectedDate || TODAY_STR
+                ).toLocaleDateString("ja-JP")} の記録：${filtered.length}件`
+              : `${selectedEmployee || "（未選択）"} の今月の記録：${
+                  filtered.length
+                }件`}
           </span>
-          <span>最終更新: {new Date(TODAY_STR).toLocaleString('ja-JP')}</span>
+          <span>最終更新: {new Date(TODAY_STR).toLocaleString("ja-JP")}</span>
         </div>
 
         {/* 異常未確認アラート */}
@@ -322,7 +405,11 @@ export default function HygieneManagement({
             <AlertTitle>異常あり</AlertTitle>
             <AlertDescription className="flex items-center gap-3">
               未確認の異常が {abnormalUnconfirmedCount} 件あります。
-              <Button variant="outline" size="sm" onClick={() => setAbnormalOnly(true)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAbnormalOnly(true)}
+              >
                 異常のみ表示
               </Button>
             </AlertDescription>
@@ -334,9 +421,9 @@ export default function HygieneManagement({
           <CardContent className="p-0">
             {filtered.length === 0 ? (
               <div className="py-12 text-center text-gray-500">
-                {mode === 'daily'
-                  ? '営業所と日付を選択すると一覧が表示されます'
-                  : '従業員を選択すると一覧が表示されます'}
+                {mode === "daily"
+                  ? "営業所と日付を選択すると一覧が表示されます"
+                  : "従業員を選択すると一覧が表示されます"}
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -354,51 +441,67 @@ export default function HygieneManagement({
                   </TableHeader>
                   <TableBody className="[&_tr]:border-b [&_tr]:border-gray-100 [&_tr]:transition-colors [&_tr:hover]:!bg-gray-50">
                     {filtered.map((r) => {
-                      const canToggle = canConfirmRow({ role: userRole, row: r, userOffice })
-                      // 異常の日本語ラベル（mockRecordItems + カテゴリ辞書から導出）
-                      const abnormalLabels = mockLoadRecordItems(r)
-                        .filter((it) => !it.is_normal)
-                        .map((it) => it.label)
+                      const canToggle = canConfirmRow({
+                        role: userRole,
+                        row: r,
+                        userOffice,
+                      });
+
+                      // 異常カテゴリ → 日本語ラベル
+                      const abnormalLabels = toAbnormalLabels(r.abnormalItems);
+
                       return (
                         <TableRow key={r.id}>
                           <TableCell className="font-medium">
                             <button
                               className="underline decoration-gray-300 hover:decoration-gray-700 underline-offset-2"
                               onClick={async () => {
-                                setDetail({ ...r, comment: '', items: [] })
-                                setDetailOpen(true)
-                                const d = await mockFetchDetail(r)
-                                setDetail(d)
+                                setDetail({ ...r, comment: "", items: [] });
+                                setDetailOpen(true);
+                                const d = await getRecordDetail(r);
+                                setDetail(d);
                               }}
                             >
                               {r.employeeName}
                             </button>
                           </TableCell>
                           <TableCell className="text-gray-600">
-                            {new Date(r.date).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })}
+                            {new Date(r.date).toLocaleDateString("ja-JP", {
+                              month: "short",
+                              day: "numeric",
+                            })}
                           </TableCell>
                           <TableCell className="text-gray-700">
-                            {abnormalLabels.length ? abnormalLabels.join(', ') : '-'}
+                            {abnormalLabels.length ? abnormalLabels.join(", ") : "-"}
                           </TableCell>
-                          <TableCell className="text-center text-lg text-red-400">{abnormalLabels.length ? '●' : ''}</TableCell>
-                          <TableCell className="text-center">{mockHasAnyComment(r) ? 'あり' : 'なし'}</TableCell>
+                          <TableCell className="text-center text-lg text-red-400">
+                            {abnormalLabels.length ? "●" : ""}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {r.hasComment ? "あり" : "なし"}
+                          </TableCell>
                           <TableCell>{statusBadge(r.status)}</TableCell>
                           <TableCell className="text-center">
                             <Checkbox
                               disabled={!canToggle}
                               checked={r.supervisorConfirmed}
                               onCheckedChange={async (checked) => {
-                                if (abnormalLabels.length > 0 && !window.confirm('この記録には異常があります。確認済みにしますか？')) {
-                                  return
+                                if (
+                                  abnormalLabels.length > 0 &&
+                                  !window.confirm(
+                                    "この記録には異常があります。確認済みにしますか？"
+                                  )
+                                ) {
+                                  return;
                                 }
-                                await mockPatchConfirm(r.id, !!checked)
-                                setConfirmVersion((v) => v + 1)
+                                await setSupervisorConfirm(r.id, !!checked);
+                                setConfirmVersion((v) => v + 1);
                               }}
                               className="mx-auto data-[state=checked]:bg-gray-900 data-[state=checked]:text-white"
                             />
                           </TableCell>
                         </TableRow>
-                      )
+                      );
                     })}
                   </TableBody>
                 </Table>
@@ -407,7 +510,7 @@ export default function HygieneManagement({
           </CardContent>
         </Card>
 
-        <div className="text-center text-xs text-gray-500">ログイン中: {userRole === 'hq_admin' ? '本社管理者' : '支店管理者'}</div>
+
 
         {/* 詳細ダイアログ */}
         <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
@@ -425,20 +528,20 @@ export default function HygieneManagement({
               <div className="space-y-6 text-sm">
                 <div className="flex justify-between">
                   <div>
-                    <div className="text-gray-900 font-medium">{detail.employeeName}</div>
+                    <div className="text-gray-900 font-medium">
+                      {detail.employeeName}
+                    </div>
                     <div className="text-gray-500">{detail.officeName}</div>
                   </div>
-                  <div>{new Date(detail.date).toLocaleDateString('ja-JP')}</div>
+                  <div>{new Date(detail.date).toLocaleDateString("ja-JP")}</div>
                 </div>
 
                 <Separator />
 
-                
-
                 {/* 異常項目 × コメント（セクション別） */}
                 <div>
                   <div className="font-medium mb-2">異常項目とコメント：</div>
-                  {detail.items?.filter(it => !it.is_normal).length ? (
+                  {detail.items?.filter((it) => !it.is_normal).length ? (
                     <div className="overflow-hidden rounded-xl border border-gray-200">
                       <div className="grid grid-cols-3 bg-gray-50 px-3 py-2 text-xs text-gray-600">
                         <div>セクション</div>
@@ -446,13 +549,19 @@ export default function HygieneManagement({
                         <div>コメント（従業員）</div>
                       </div>
                       <div className="divide-y">
-                        {detail.items.filter(it => !it.is_normal).map((it, i) => (
-                          <div key={i} className="grid grid-cols-3 px-3 py-2">
-                            <div className="text-gray-900">{it.section || '—'}</div>
-                            <div className="text-gray-900">{it.label}</div>
-                            <div className="text-gray-700">{it.value || '—'}</div>
-                          </div>
-                        ))}
+                        {detail.items
+                          .filter((it) => !it.is_normal)
+                          .map((it, i) => (
+                            <div key={i} className="grid grid-cols-3 px-3 py-2">
+                              <div className="text-gray-900">
+                                {it.section || "—"}
+                              </div>
+                              <div className="text-gray-900">{it.label}</div>
+                              <div className="text-gray-700">
+                                {it.value || "—"}
+                              </div>
+                            </div>
+                          ))}
                       </div>
                     </div>
                   ) : (
@@ -465,5 +574,5 @@ export default function HygieneManagement({
         </Dialog>
       </div>
     </div>
-  )
+  );
 }

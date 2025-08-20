@@ -277,7 +277,7 @@ useEffect(() => {
       const isCheckedIn = !!record?.work_start_time;
       if (currentStep === 2 && !isCheckedIn) {
         alert("出勤登録がされていません。先に出勤チェックを完了してください。");
-        navigate("/dashboard");
+        navigate("/form");
         return;
       }
 
