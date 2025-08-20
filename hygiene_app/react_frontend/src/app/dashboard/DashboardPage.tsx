@@ -248,7 +248,7 @@ export default function HygieneDashboard() {
         <div className="mt-auto">
           <button
             onClick={handleLogout}
-            className="w-full text-xs p-2 h-20 rounded flex flex-col items-center gap-1 hover:bg-red-100 text-red-700"
+            className="w-full text-xs p-2 h-20 rounded flex flex-col items-center justify-center gap-1 hover:bg-red-100 text-red-700"
           >
             <LogOut className="w-5 h-5" />
             ログアウト
