@@ -214,3 +214,76 @@ export async function getTodayRecordWithItems(
   const items = record ? mockRecordItems.filter(i => i.recordId === record.id) : [];
   return { record, items };
 }
+
+// --- Dashboard 用の型（ダッシュボードが今使っている形） ---
+export type DashboardStaffRow = {
+  id: string;
+  name: string;
+  arrivalRegistered: boolean;
+  departureRegistered: boolean;
+  temperature: number | null;
+  symptoms: boolean;
+  comment: string;
+};
+
+// 営業所コード→営業所名
+export function getBranchNameByCode(code?: string | null): string {
+  if (!code) return "営業所未設定";
+  return mockBranches.find((b) => b.code === code)?.name ?? "営業所未設定";
+}
+
+// ダッシュボード1日の一覧
+export async function getDashboardStaffRows(
+  branchCode: string,
+  dateISO: string
+): Promise<DashboardStaffRow[]> {
+  const emps = mockEmployees.filter((e) => e.branchCode === branchCode);
+
+  return emps.map((emp) => {
+    const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === dateISO);
+    const items = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
+
+    const temperatureRaw = items.find((i) => i.category === "temperature")?.value;
+    const temperature =
+      temperatureRaw !== undefined && temperatureRaw !== null
+        ? Number(temperatureRaw)
+        : null;
+
+    const symptoms = items.some(
+      (i) =>
+        i.is_normal === false &&
+        ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(
+          i.category
+        )
+    );
+
+    const comment = items.find((i) => i.value && i.is_normal === false)?.value ?? "";
+
+    return {
+      id: emp.code,
+      name: emp.name,
+      arrivalRegistered: !!rec?.work_start_time,
+      departureRegistered: !!rec?.work_end_time,
+      temperature,
+      symptoms,
+      comment,
+    };
+  });
+}
+
+// 営業所PIN（またはパスワード）を取得：ダッシュボードの管理者認証で使用
+export async function getBranchExpectedPin(branchCode: string): Promise<string | null> {
+  const b = mockBranches.find((x) => x.code === branchCode) as
+    | { managementPin?: string | number; password?: string | number }
+    | undefined;
+
+  if (!b) return null;
+
+  // managementPin があれば優先、なければ password を使う
+  const pinRaw = b.managementPin ?? b.password;
+  if (pinRaw == null) return null;
+
+  // 数値でも文字列でも受け取り、4桁ゼロパディングして返す
+  const s = String(pinRaw);
+  return /^\d+$/.test(s) ? s.padStart(4, "0") : s;
+}

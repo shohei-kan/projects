@@ -1,7 +1,7 @@
 // src/app/dashboard/DashboardPage.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 // UI
@@ -19,8 +19,13 @@ import { Button } from "@/components/ui/button";
 // Icons
 import { CheckCircle, Clock, Home, HelpCircle, Settings, LogOut, Edit } from "lucide-react";
 
-// Data
-import { mockEmployees, mockRecords, mockRecordItems, mockBranches } from "@/data";
+// Adapter（ここだけ差し替えればAPI対応に移行できます）
+import {
+  getDashboardStaffRows,
+  getBranchNameByCode,
+  getBranchExpectedPin,          // ← 追加: 支店の管理PIN/パスワードを取得
+  type DashboardStaffRow,
+} from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
 
 /* ---------- utils ---------- */
@@ -29,16 +34,7 @@ const formatDate = (date: Date) => {
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${days[date.getDay()]}`;
 };
 
-type StaffRecord = {
-  id: string;
-  name: string;
-  arrivalRegistered: boolean;
-  departureRegistered: boolean;
-  temperature: number | null;
-  symptoms: boolean;
-  comment: string;
-};
-
+/* ---------- session ---------- */
 type SessionUser =
   | { role: "hq_admin"; userId: string; displayName: string; branchCode: null }
   | { role: "branch_manager" | "employee"; userId: string; displayName: string; branchCode: string };
@@ -77,63 +73,56 @@ export default function HygieneDashboard() {
       ? session.user.branchCode
       : null;
 
-  const branchCode = branchCodeFromSession ?? localStorage.getItem("branchCode") ?? "";
-  const branchName = useMemo(
-    () => mockBranches.find((b) => b.code === branchCode)?.name ?? "営業所未設定",
-    [branchCode]
-  );
+  // セッション > 旧localStorageキー
+  const branchCode = (branchCodeFromSession ?? localStorage.getItem("branchCode") ?? "").trim();
+
+  const branchName = useMemo(() => getBranchNameByCode(branchCode), [branchCode]);
 
   const now = Date.now();
   const managementValid = (session?.managementUntil ?? 0) > now;
 
   // UI state
-  const [activeTab, setActiveTab] = useState<"home" | "help">("home"); // ← ヘルプ用だけ管理
+  const [activeTab, setActiveTab] = useState<"home" | "help">("home");
   const [password, setPassword] = useState("");
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [attempts, setAttempts] = useState(0);
   const [lockedUntil, setLockedUntil] = useState<number | null>(null);
 
-  // 当日・営業所のスタッフ一覧
-  const staffRecords: StaffRecord[] = useMemo(() => {
-    const todayStr = TODAY_STR;
-    return mockEmployees
-      .filter((emp) => emp.branchCode === branchCode)
-      .map((emp) => {
-        const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === todayStr);
-        const items = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
+  // ダッシュボード表示データ（アダプタ経由）
+  const [staffRecords, setStaffRecords] = useState<DashboardStaffRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-        const temperatureItem = items.find((i) => i.category === "temperature");
-        const temperature = temperatureItem?.value ? parseFloat(temperatureItem.value) : null;
-
-        const symptoms = items.some(
-          (i) =>
-            i.is_normal === false &&
-            ["health_check", "no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(
-              i.category
-            )
-        );
-
-        const commentItem = items.find((i) => i.value && i.is_normal === false);
-        const comment = commentItem?.value || "";
-
-        return {
-          id: emp.code,
-          name: emp.name,
-          arrivalRegistered: !!rec?.work_start_time,
-          departureRegistered: !!rec?.work_end_time,
-          temperature,
-          symptoms,
-          comment,
-        };
-      });
+  useEffect(() => {
+    if (!branchCode) {
+      setStaffRecords([]);
+      setLoading(false);
+      return;
+    }
+    let aborted = false;
+    (async () => {
+      try {
+        setLoading(true);
+        setLoadError(null);
+        const rows = await getDashboardStaffRows(branchCode, TODAY_STR);
+        if (!aborted) setStaffRecords(rows);
+      } catch {
+        if (!aborted) setLoadError("一覧の取得に失敗しました");
+      } finally {
+        if (!aborted) setLoading(false);
+      }
+    })();
+    return () => {
+      aborted = true;
+    };
   }, [branchCode]);
 
-  const getStatusIcon = (r: StaffRecord) => {
+  const getStatusIcon = (r: DashboardStaffRow) => {
     if (r.arrivalRegistered && r.departureRegistered) return <CheckCircle className="w-3 h-3 text-green-600" />;
     if (r.arrivalRegistered) return <Clock className="w-3 h-3 text-yellow-600" />;
     return null;
   };
-  const getStatusText = (r: StaffRecord) => {
+  const getStatusText = (r: DashboardStaffRow) => {
     if (r.arrivalRegistered && r.departureRegistered) return "退勤入力済";
     if (r.arrivalRegistered) return "出勤入力済";
     return "-";
@@ -155,22 +144,27 @@ export default function HygieneDashboard() {
     else setIsPasswordModalOpen(true);
   };
 
-  const handlePasswordSubmit = () => {
+  const handlePasswordSubmit = async () => {
     if (lockedUntil && lockedUntil > Date.now()) {
       const rest = Math.ceil((lockedUntil - Date.now()) / 60000);
       alert(`試行回数が多すぎます。${rest}分後に再試行してください。`);
       return;
     }
-    const branch = mockBranches.find((b) => b.code === branchCode);
-    if (!branch) {
+    if (!branchCode) {
       alert("営業所情報を取得できません。");
       return;
     }
-    const expectedPin = branch.managementPin ?? branch.password;
     if (!/^\d{4}$/.test(password)) {
       alert("数字4桁で入力してください。");
       return;
     }
+
+    const expectedPin = await getBranchExpectedPin(branchCode); // ← アダプタから取得
+    if (!expectedPin) {
+      alert("営業所の認証情報を取得できませんでした。");
+      return;
+    }
+
     if (password !== expectedPin) {
       const next = attempts + 1;
       setAttempts(next);
@@ -183,6 +177,7 @@ export default function HygieneDashboard() {
       }
       return;
     }
+
     const updated: SessionPayload = {
       ...(session as SessionPayload),
       managementUntil: Date.now() + STEPUP_MINUTES * 60 * 1000,
@@ -277,35 +272,44 @@ export default function HygieneDashboard() {
                 <CardTitle className="text-base">記録状況</CardTitle>
               </CardHeader>
               <CardContent className="pt-0">
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {staffRecords.map((r) => (
-                    <div key={r.id} className="flex items-center justify-between p-2 bg-gray-50 rounded border">
-                      <p className="truncate">{r.name}</p>
-                      <div className="flex items-center gap-1">
-                        {getStatusIcon(r)}
-                        <span
-                          className={`text-xs ${
-                            r.arrivalRegistered && r.departureRegistered
-                              ? "text-green-600"
-                              : r.arrivalRegistered
-                              ? "text-yellow-600"
-                              : "text-gray-500"
-                          }`}
-                        >
-                          {getStatusText(r)}
-                        </span>
-                        {r.arrivalRegistered && !r.departureRegistered && (
-                          <button
-                            onClick={() => navigate(`/form?employeeCode=${r.id}&step=2`)}
-                            className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-300 hover:bg-blue-200 hover:ring-blue-400 transition"
+                {loadError && (
+                  <div className="mb-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                    {loadError}
+                  </div>
+                )}
+                {loading ? (
+                  <div className="text-xs text-gray-500">読み込み中...</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {staffRecords.map((r) => (
+                      <div key={r.id} className="flex items-center justify-between p-2 bg-gray-50 rounded border">
+                        <p className="truncate">{r.name}</p>
+                        <div className="flex items-center gap-1">
+                          {getStatusIcon(r)}
+                          <span
+                            className={`text-xs ${
+                              r.arrivalRegistered && r.departureRegistered
+                                ? "text-green-600"
+                                : r.arrivalRegistered
+                                ? "text-yellow-600"
+                                : "text-gray-500"
+                            }`}
                           >
-                            退勤チェック
-                          </button>
-                        )}
+                            {getStatusText(r)}
+                          </span>
+                          {r.arrivalRegistered && !r.departureRegistered && (
+                            <button
+                              onClick={() => navigate(`/form?employeeCode=${r.id}&step=2`)}
+                              className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-300 hover:bg-blue-200 hover:ring-blue-400 transition"
+                            >
+                              退勤チェック
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </>
@@ -314,9 +318,7 @@ export default function HygieneDashboard() {
 
       {/* 管理者パス（営業所PIN） */}
       <Dialog open={isPasswordModalOpen} onOpenChange={setIsPasswordModalOpen}>
-        <DialogContent
-          className="bg-white rounded-2xl"
-        >
+        <DialogContent className="bg-white rounded-2xl">
           <DialogHeader>
             <DialogTitle id="mgmt-title">管理者認証</DialogTitle>
             <DialogDescription id="mgmt-desc" className="whitespace-pre-line">
