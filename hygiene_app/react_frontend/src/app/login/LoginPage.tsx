@@ -293,7 +293,7 @@ export default function LoginForm(): JSX.Element {
               </Alert>
             )}
 
-            <Button type="submit" className="w-full h-12" disabled={!isValid || isSubmitting}>
+            <Button type="submit" className="w-full h-12 bg-blue-500 text-gray-900" disabled={!isValid || isSubmitting}>
               {isSubmitting ? "処理中..." : "ログイン"}
             </Button>
           </form>
