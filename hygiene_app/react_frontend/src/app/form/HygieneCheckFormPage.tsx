@@ -1,6 +1,7 @@
+// src/app/form/HygieneCheckFormPage.tsx
 "use client";
 
-import { useEffect, useMemo, useState, useLayoutEffect, Fragment, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 // UI
@@ -12,24 +13,35 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 // Icons
 import {
-  Calendar, Save, AlertTriangle, Heart, Wind, Hand, Shirt,
-  ClipboardCheck, CheckCircle, ChevronLeft, Home,
+  Calendar,
+  Save,
+  AlertTriangle,
+  Heart,
+  Wind,
+  Hand,
+  Shirt,
+  ClipboardCheck,
+  CheckCircle,
+  ChevronLeft,
+  Home,
 } from "lucide-react";
 
-// Headless UI
-import { Listbox, Transition, Portal } from "@headlessui/react";
-import { createPortal } from "react-dom";
-import { CheckIcon, ChevronUpDownIcon } from "@heroicons/react/20/solid";
-
-// Data
-import { mockEmployees, mockRecords, mockRecordItems } from "@/data";
+// Adapter（モック→APIの差し替えポイント）
+import {
+  getEmployeesByBranch,
+  getTodayRecordWithItems,
+} from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
 
-/* ---------------- Types / Const ---------------- */
+/* ---------------- Types ---------------- */
 interface CheckItem {
   id: string;
   label: string;
@@ -39,248 +51,74 @@ interface CheckItem {
   guidance?: string;
 }
 
-/* ---------------- Reusable: Listbox（Portal版） ----------------
-   親の overflow や z-index に影響されないドロップダウン。
-   - Options は document.body 直下（Portal）に fixed で描画
-   - Trigger の位置/幅を毎回計測して追従
----------------------------------------------------------------- */
-// 置き換え：PortalListbox
-function PortalListbox({
-  value,
-  onChange,
-  options,
-  placeholder = "選択してください",
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: Array<{ value: string; label: string }>;
-  placeholder?: string;
-}) {
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const [rect, setRect] = useState<DOMRect | null>(null);
-
-  return (
-    <Listbox value={value} onChange={onChange}>
-      {({ open }) => {
-        // トリガーの位置を監視
-        useLayoutEffect(() => {
-          if (!open) return;
-          const update = () => btnRef.current && setRect(btnRef.current.getBoundingClientRect());
-          update();
-          window.addEventListener("resize", update);
-          window.addEventListener("scroll", update, true);
-          return () => {
-            window.removeEventListener("resize", update);
-            window.removeEventListener("scroll", update, true);
-          };
-        }, [open]);
-
-        // 位置計算（fixed基準：スクロール量は加えない）
-        const MAX_H = 280;
-        const PAD = 8;
-        const style: React.CSSProperties = {};
-        if (rect) {
-          const width = Math.min(rect.width, window.innerWidth - PAD * 2);
-          const left = Math.min(Math.max(rect.left, PAD), window.innerWidth - width - PAD);
-          const spaceBelow = window.innerHeight - rect.bottom;
-          const openUp = spaceBelow < MAX_H + 8;
-          const rawTop = openUp ? rect.top - MAX_H - 8 : rect.bottom + 4;
-          const top = Math.min(Math.max(rawTop, PAD), window.innerHeight - PAD - MAX_H);
-          Object.assign(style, {
-            position: "fixed",
-            left,
-            top,
-            width,
-            maxHeight: MAX_H,
-          });
-        }
-
-        // メニュー本体（単一要素 <ul>）
-        const Menu = (
-          <Transition
-            appear
-            show={open}
-            as={Fragment} // OK：子が <ul> なので props を渡せる
-            enter="transition ease-out duration-100"
-            enterFrom="opacity-0 scale-95"
-            enterTo="opacity-100 scale-100"
-            leave="transition ease-in duration-75"
-            leaveFrom="opacity-100 scale-100"
-            leaveTo="opacity-0 scale-95"
-          >
-            <ul
-              className="z-[50] overflow-auto rounded-xl bg-white py-1 text-sm shadow-lg ring-1 ring-black/10 focus:outline-none"
-              style={style}
-            >
-              {options.map((opt) => (
-                <Listbox.Option
-                  as="li"                   // ← DOM要素を明示（Fragment回避）
-                  key={opt.value}
-                  value={opt.value}
-                  onClick={() => onChange(opt.value)}   // ← 明示的に選択させる
-                  onKeyDown={(e) => {                   // ← Enter/Spaceでも選択
-                    if (e.key === "Enter" || e.key === " ") onChange(opt.value);
-                  }}
-                  className={({ active }) =>
-                    `relative cursor-pointer py-2 pl-10 pr-4 ${
-                      active ? "bg-blue-100 text-blue-700" : "text-gray-900"
-                    }`
-                  }
-                >
-                  {({ selected }) => (
-                    <>
-                      <span className={`block truncate ${selected ? "font-medium" : "font-normal"}`}>
-                        {opt.label}
-                      </span>
-                      {selected && (
-                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-blue-600">
-                          <CheckIcon className="h-4 w-4" aria-hidden="true" />
-                        </span>
-                      )}
-                    </>
-                  )}
-                </Listbox.Option>
-
-              ))}
-            </ul>
-          </Transition>
-        );
-
-        return (
-          <div className="relative">
-            <Listbox.Button
-              ref={btnRef}
-              className={`relative w-full cursor-default rounded-xl border px-3 py-2 text-left text-sm focus:outline-none ${
-                value ? "border-gray-300 bg-white" : "border-amber-300 bg-amber-50"
-              }`}
-            >
-              <span className="block truncate">
-                {options.find((o) => o.value === value)?.label ?? placeholder}
-              </span>
-              <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
-                <ChevronUpDownIcon className="h-4 w-4 text-gray-400" />
-              </span>
-            </Listbox.Button>
-
-            {/* ← Portal は Transition の“外側”ではなく、“周り”に置く */}
-            {open ? createPortal(Menu, document.body) : null}
-          </div>
-        );
-      }}
-    </Listbox>
-  );
-}
-
-
 /* ---------------- Component ---------------- */
 export default function DailyHygieneCheckForm() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  const employeeCode = searchParams.get("employeeCode") ?? "";
+  const employeeCodeParam = searchParams.get("employeeCode") ?? "";
   const stepParam = parseInt(searchParams.get("step") ?? "1", 10);
-  const [currentStep, setCurrentStep] = useState<1 | 2>(stepParam === 2 ? 2 : 1);
-  const todayStr = TODAY_STR;
+  const [currentStep, setCurrentStep] = useState<1 | 2>(
+    stepParam === 2 ? 2 : 1
+  );
 
-  const [step1Completed, setStep1Completed] = useState(false);
-
-  // 出勤済みかチェックし、step1Completed を設定。未出勤で step2 をブロック
-  useEffect(() => {
-    if (!employeeCode) return;
-    const todayRecord = mockRecords.find(
-      (r) => r.employeeCode === employeeCode && r.date === todayStr && r.work_start_time !== null
-    );
-    if (todayRecord) setStep1Completed(true);
-    if (currentStep === 2 && !todayRecord) {
-      alert("出勤登録がされていません。先に出勤チェックを完了してください。");
-      navigate("/dashboard");
-    }
-  }, [employeeCode, currentStep, todayStr, navigate]);
-
-  // 対象従業員を URL から事前選択
-  useEffect(() => {
-    if (!employeeCode) return;
-    const emp = mockEmployees.find((e) => e.code === employeeCode);
-    if (emp) setBasicInfo((prev) => ({ ...prev, employee: emp.code }));
-  }, [employeeCode]);
-
-  // ログイン中の営業所
-  // const branchCode = (localStorage.getItem("branchCode") ?? "").trim();
   // --- セッション優先で営業所コードを取得（HQはブランチ無し） ---
-type SessionUser =
-  | { role: "hq_admin"; userId: string; displayName: string; branchCode: null }
-  | {
-      role: "branch_manager" | "employee";
-      userId: string;
-      displayName: string;
-      branchCode: string;
-    };
+  type SessionUser =
+    | { role: "hq_admin"; userId: string; displayName: string; branchCode: null }
+    | {
+        role: "branch_manager" | "employee";
+        userId: string;
+        displayName: string;
+        branchCode: string;
+      };
+  type SessionPayload = {
+    isLoggedIn: true;
+    loginDate: string; // "YYYY-MM-DD"
+    user: SessionUser;
+  };
+  const loadSession = (): SessionPayload | null => {
+    try {
+      return JSON.parse(localStorage.getItem("session") ?? "null");
+    } catch {
+      return null;
+    }
+  };
+  const session = loadSession();
+  const branchCodeFromSession =
+    session?.user && session.user.role !== "hq_admin"
+      ? (session.user.branchCode ?? "")
+      : "";
+  // セッション > 旧localStorageキー の優先で使用
+  const branchCode = (
+    branchCodeFromSession ||
+    localStorage.getItem("branchCode") ||
+    ""
+  ).trim();
 
-type SessionPayload = {
-  isLoggedIn: true;
-  loginDate: string; // "YYYY-MM-DD"
-  user: SessionUser;
-};
-
-const loadSession = (): SessionPayload | null => {
-  try {
-    return JSON.parse(localStorage.getItem("session") ?? "null");
-  } catch {
-    return null;
-  }
-};
-
-const session = loadSession();
-
-const branchCodeFromSession =
-  session?.user && session.user.role !== "hq_admin"
-    ? (session.user.branchCode ?? "")
-    : "";
-
-// セッション > 旧localStorageキー の優先で使用
-const branchCode = (branchCodeFromSession || localStorage.getItem("branchCode") || "").trim();
+  /* ---------- 従業員一覧をアダプターから取得 ---------- */
+  const [employeesInOffice, setEmployeesInOffice] = useState<
+    Array<{ code: string; name: string; branchCode: string }>
+  >([]);
 
 
-  // 営業所の従業員
-// ログイン営業所の従業員だけ抽出（useMemo 推奨）
-const employeesInOffice = useMemo(() => {
-  return mockEmployees.filter((emp) => emp.branchCode === branchCode);
+  const [empLoaded, setEmpLoaded] = useState(false);
+
+useEffect(() => {
+  if (!branchCode) { setEmpLoaded(true); return; }
+  let aborted = false;
+  (async () => {
+    try {
+      const list = await getEmployeesByBranch(branchCode);
+      if (!aborted) setEmployeesInOffice(list);
+    } finally {
+      if (!aborted) setEmpLoaded(true);
+    }
+  })();
+  return () => { aborted = true; };
 }, [branchCode]);
-
-// ★ データが無い/営業所未設定のときの早期リターン（ログイン促し）
-if (!branchCode || employeesInOffice.length === 0) {
-  return (
-    <div className="min-h-screen grid place-items-center bg-gray-50 p-6">
-      <div className="max-w-md w-full bg-white rounded-xl shadow p-6 text-center space-y-4">
-        <p className="text-lg font-medium">従業員データが取得できませんでした。</p>
-        <p className="text-sm text-gray-600">
-          営業所が未設定か、ログイン情報が無効です。もう一度ログインしてください。
-        </p>
-        <button
-          className="inline-flex items-center px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700"
-          onClick={() => {
-            // 古いキーは掃除。sessionは必要なら残してOK
-            localStorage.removeItem("isLoggedIn");
-            localStorage.removeItem("loginDate");
-            localStorage.removeItem("branchCode");
-            // 必要なら session も削除
-            // localStorage.removeItem("session");
-            window.location.href = "/login";
-          }}
-        >
-          ログインへ戻る
-        </button>
-      </div>
-    </div>
-  );
-}
-  const employeeOptions = useMemo(
-    () => employeesInOffice.map((e) => ({ value: e.code, label: e.name })),
-    [employeesInOffice]
-  );
-
   
-  /* ---------- 基本情報 ---------- */
+
+  /* ---------- 基本情報（フォームヘッダー） ---------- */
   const [basicInfo, setBasicInfo] = useState({
     date: new Date(TODAY_STR).toISOString().split("T")[0],
     employee: "",
@@ -288,15 +126,26 @@ if (!branchCode || employeesInOffice.length === 0) {
     temperature: "36.0",
   });
 
+  // URL の employeeCode を初期選択（従業員一覧取得後に）
+  useEffect(() => {
+    if (!employeeCodeParam) return;
+    const exists = employeesInOffice.some((e) => e.code === employeeCodeParam);
+    if (exists) {
+      setBasicInfo((prev) => ({ ...prev, employee: employeeCodeParam }));
+    }
+  }, [employeeCodeParam, employeesInOffice]);
+
   /* ---------- チェック項目 ---------- */
   const [healthChecks, setHealthChecks] = useState<CheckItem[]>([
     {
       id: "no_health_issues",
-      label: "本人に体調異常はないか（下痢・嘔吐・腹痛・発熱・倦怠感等）",
+      label:
+        "本人に体調異常はないか（下痢・嘔吐・腹痛・発熱・倦怠感等）",
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "異常がある場合は直ちに責任者に報告し、作業を中止してください",
+      guidance:
+        "異常がある場合は直ちに責任者に報告し、作業を中止してください",
     },
     {
       id: "family_no_symptoms",
@@ -304,7 +153,8 @@ if (!branchCode || employeesInOffice.length === 0) {
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "症状がある場合は家族の健康状態を継続観察し、本人の健康管理を強化してください",
+      guidance:
+        "症状がある場合は家族の健康状態を継続観察し、本人の健康管理を強化してください",
     },
   ]);
 
@@ -315,7 +165,8 @@ if (!branchCode || employeesInOffice.length === 0) {
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "症状がある場合はマスク着用を徹底し、必要に応じて医療機関を受診してください",
+      guidance:
+        "症状がある場合はマスク着用を徹底し、必要に応じて医療機関を受診してください",
     },
   ]);
 
@@ -326,7 +177,8 @@ if (!branchCode || employeesInOffice.length === 0) {
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "重度の手荒れがある場合は適切な保護手袋を着用し、治療を受けてください",
+      guidance:
+        "重度の手荒れがある場合は適切な保護手袋を着用し、治療を受けてください",
     },
     {
       id: "no_mild_hand_damage",
@@ -334,28 +186,33 @@ if (!branchCode || employeesInOffice.length === 0) {
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "軽度の手荒れがある場合は保護クリーム使用し、手洗い後の保湿を心がけてください",
+      guidance:
+        "軽度の手荒れがある場合は保護クリーム使用し、手洗い後の保湿を心がけてください",
     },
   ]);
 
-  const [uniformHygieneChecks, setUniformHygieneChecks] = useState<CheckItem[]>([
-    {
-      id: "nails_groomed",
-      label: "爪・ひげは整っている",
-      checked: true,
-      requiresComment: false,
-      comment: "",
-      guidance: "整っていない場合は作業前に必ず爪を短く切り、ひげを剃って清潔にしてください",
-    },
-    {
-      id: "proper_uniform",
-      label: "服装が正しい",
-      checked: true,
-      requiresComment: false,
-      comment: "",
-      guidance: "服装が不適切な場合は規定の作業服・帽子・履物に着替えてから作業を開始してください",
-    },
-  ]);
+  const [uniformHygieneChecks, setUniformHygieneChecks] = useState<CheckItem[]>(
+    [
+      {
+        id: "nails_groomed",
+        label: "爪・ひげは整っている",
+        checked: true,
+        requiresComment: false,
+        comment: "",
+        guidance:
+          "整っていない場合は作業前に必ず爪を短く切り、ひげを剃って清潔にしてください",
+      },
+      {
+        id: "proper_uniform",
+        label: "服装が正しい",
+        checked: true,
+        requiresComment: false,
+        comment: "",
+        guidance:
+          "服装が不適切な場合は規定の作業服・帽子・履物に着替えてから作業を開始してください",
+      },
+    ]
+  );
 
   const [postWorkChecks, setPostWorkChecks] = useState<CheckItem[]>([
     {
@@ -364,7 +221,8 @@ if (!branchCode || employeesInOffice.length === 0) {
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "発生した場合は直ちに作業を中止し、責任者に報告してください",
+      guidance:
+        "発生した場合は直ちに作業を中止し、責任者に報告してください",
     },
     {
       id: "proper_handwashing",
@@ -372,12 +230,104 @@ if (!branchCode || employeesInOffice.length === 0) {
       checked: true,
       requiresComment: false,
       comment: "",
-      guidance: "未実施の場合は直ちに規定の手洗い手順（石鹸で30秒以上）を実施してください",
+      guidance:
+        "未実施の場合は直ちに規定の手洗い手順（石鹸で30秒以上）を実施してください",
     },
   ]);
 
-  /* ---------- その他入力 ---------- */
-  const [finalConfirmation, setFinalConfirmation] = useState({ directorSignature: "" });
+  /* ---------- 既存レコードの反映（アダプター経由） ---------- */
+  // RecordItem を既存 state に反映する小ユーティリティ
+  const patchSection = (
+    targetId: string,
+    setItems: React.Dispatch<React.SetStateAction<CheckItem[]>>,
+    normal: boolean | null | undefined,
+    value?: string | number | null
+  ) => {
+    if (normal === undefined || normal === null) return;
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === targetId
+          ? {
+              ...it,
+              checked: !!normal, // is_normal === true を「正常（チェックON）」とみなす
+              requiresComment: !normal,
+              comment:
+                !normal && value !== undefined && value !== null
+                  ? String(value)
+                  : normal
+                  ? ""
+                  : it.comment,
+            }
+          : it
+      )
+    );
+  };
+
+  // 選択された従業員と今日の入力を取得して反映
+  useEffect(() => {
+    const code = basicInfo.employee || employeeCodeParam;
+    if (!code) return;
+
+    let aborted = false;
+    (async () => {
+      const { record, items } = await getTodayRecordWithItems(code, TODAY_STR);
+      if (aborted) return;
+
+      // 出勤済み判定（step2 ブロック用）
+      const isCheckedIn = !!record?.work_start_time;
+      if (currentStep === 2 && !isCheckedIn) {
+        alert("出勤登録がされていません。先に出勤チェックを完了してください。");
+        navigate("/dashboard");
+        return;
+      }
+
+      // 体温
+      const tempVal = items.find((it) => it.category === "temperature")?.value;
+      if (tempVal !== undefined && tempVal !== null) {
+        setBasicInfo((prev) => ({
+          ...prev,
+          temperature: String(tempVal),
+        }));
+      }
+
+      // 各カテゴリの is_normal / value を反映
+      for (const it of items) {
+        switch (it.category) {
+          case "no_health_issues":
+          case "family_no_symptoms":
+            patchSection(it.category, setHealthChecks, it.is_normal, it.value);
+            break;
+
+          case "no_respiratory_symptoms":
+            patchSection(it.category, setRespiratoryChecks, it.is_normal, it.value);
+            break;
+
+          case "no_severe_hand_damage":
+          case "no_mild_hand_damage":
+            patchSection(it.category, setHandHygieneChecks, it.is_normal, it.value);
+            break;
+
+          case "nails_groomed":
+          case "proper_uniform":
+            patchSection(it.category, setUniformHygieneChecks, it.is_normal, it.value);
+            break;
+
+          case "no_work_illness":
+          case "proper_handwashing":
+            patchSection(it.category, setPostWorkChecks, it.is_normal, it.value);
+            break;
+
+          // temperature は上で処理済み
+          default:
+            break;
+        }
+      }
+    })();
+
+    return () => {
+      aborted = true;
+    };
+  }, [basicInfo.employee, employeeCodeParam, currentStep, navigate]);
 
   /* ---------- ヘルパ ---------- */
   const updateCheckItem = (
@@ -398,10 +348,17 @@ if (!branchCode || employeesInOffice.length === 0) {
     );
   };
 
-  /* ---------- 保存/送信 ---------- */
+  const findEmpName = (code: string) =>
+    employeesInOffice.find((e) => e.code === code)?.name ?? code;
+
+  /* ---------- 保存/送信（モックのまま） ---------- */
   const handleStep1Save = () => {
-    const requireComment = [...healthChecks, ...respiratoryChecks, ...handHygieneChecks, ...uniformHygieneChecks]
-      .some((i) => !i.checked && i.comment.trim() === "");
+    const requireComment = [
+      ...healthChecks,
+      ...respiratoryChecks,
+      ...handHygieneChecks,
+      ...uniformHygieneChecks,
+    ].some((i) => !i.checked && i.comment.trim() === "");
     if (requireComment) {
       alert("異常が報告されている項目について、詳細コメントが必要です。");
       return;
@@ -410,13 +367,14 @@ if (!branchCode || employeesInOffice.length === 0) {
       alert("従業員名と確認者名を入力してください。");
       return;
     }
-    setStep1Completed(true);
     alert("出勤時チェックを保存しました");
     navigate("/dashboard");
   };
 
   const handleFinalSubmit = () => {
-    const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
+    const requireComment = postWorkChecks.some(
+      (i) => !i.checked && i.comment.trim() === ""
+    );
     if (requireComment) {
       alert("異常が報告されている項目について、詳細コメントが必要です。");
       return;
@@ -425,16 +383,42 @@ if (!branchCode || employeesInOffice.length === 0) {
     navigate("/dashboard");
   };
 
-  /* ---------- 既存レコード（未使用でも一応保持） ---------- */
-  const record = mockRecords.find((r) => r.employeeCode === employeeCode && r.date === todayStr);
-  const recordItems = record ? mockRecordItems.filter((it) => it.recordId === record.id) : [];
-
   /* ---------------- Render ---------------- */
   return (
-    // 先頭付近
   <div className="hygiene-form min-h-screen bg-gray-50 py-4 relative">
-
-
+    {
+      !branchCode ? (
+        // ログイン促し
+        <div className="min-h-[60vh] grid place-items-center px-6">
+          <div className="max-w-md w-full bg-white rounded-xl shadow p-6 text-center space-y-4">
+            <p className="text-lg font-medium">従業員データが取得できませんでした。</p>
+            <p className="text-sm text-gray-600">
+              営業所が未設定か、ログイン情報が無効です。もう一度ログインしてください。
+            </p>
+            <button
+              className="inline-flex items-center px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700"
+              onClick={() => {
+                localStorage.removeItem("isLoggedIn");
+                localStorage.removeItem("loginDate");
+                localStorage.removeItem("branchCode");
+                window.location.href = "/login";
+              }}
+            >
+              ログインへ戻る
+            </button>
+          </div>
+        </div>
+      ) : !empLoaded ? (
+        // ローディング
+        <div className="min-h-[60vh] grid place-items-center">
+          <div className="animate-pulse text-gray-500">読み込み中...</div>
+        </div>
+      ) : employeesInOffice.length === 0 ? (
+        // 空データ
+        <div className="min-h-[60vh] grid place-items-center">
+          <div className="text-gray-600">この営業所に従業員が見つかりませんでした。</div>
+        </div>
+      ) : (
       <div className="max-w-7xl mx-auto px-4">
         {/* 右上：ホーム */}
         <button
@@ -447,14 +431,18 @@ if (!branchCode || employeesInOffice.length === 0) {
 
         {/* ヘッダー */}
         <div className="mb-6">
-          <h1 className="text-2xl font-medium text-gray-900 mb-4">健康管理チェックフォーム</h1>
+          <h1 className="text-2xl font-medium text-gray-900 mb-4">
+            健康管理チェックフォーム
+          </h1>
 
           {/* ステップ切替 */}
           <div className="flex items-center justify-center mb-4 space-x-4">
             <Button
               variant={currentStep === 1 ? "default" : "outline"}
               className={`text-sm rounded-xl px-6 py-2 ${
-                currentStep === 1 ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                currentStep === 1
+                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
               }`}
               onClick={() => setCurrentStep(1)}
             >
@@ -463,7 +451,9 @@ if (!branchCode || employeesInOffice.length === 0) {
             <Button
               variant={currentStep === 2 ? "default" : "outline"}
               className={`text-sm rounded-xl px-6 py-2 ${
-                currentStep === 2 ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                currentStep === 2
+                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
               }`}
               onClick={() => setCurrentStep(2)}
             >
@@ -472,7 +462,9 @@ if (!branchCode || employeesInOffice.length === 0) {
           </div>
 
           <p className="text-gray-600 text-sm text-center">
-            {currentStep === 1 ? "出勤時の衛生管理項目を確認し、記録してください" : "作業後の確認項目をチェックしてください"}
+            {currentStep === 1
+              ? "出勤時の衛生管理項目を確認し、記録してください"
+              : "作業後の確認項目をチェックしてください"}
           </p>
         </div>
 
@@ -480,17 +472,25 @@ if (!branchCode || employeesInOffice.length === 0) {
           <>
             {/* 基本情報 */}
             <div className="mb-8">
-              <Card className={`border-gray-200 ${!basicInfo.employee || !basicInfo.supervisor ? "ring-2 ring-amber-200" : ""}`}>
+              <Card
+                className={`border-gray-200 ${
+                  !basicInfo.employee || !basicInfo.supervisor
+                    ? "ring-2 ring-amber-200"
+                    : ""
+                }`}
+              >
                 <CardHeader>
                   <div className="flex items-center justify-between w-full">
                     <div className="flex items-center space-x-2">
                       <Calendar className="w-5 h-5 text-gray-500" />
-                      <CardTitle className="text-gray-700 text-lg">基本情報</CardTitle>
+                      <CardTitle className="text-gray-700 text-lg">
+                        基本情報
+                      </CardTitle>
                     </div>
                     {basicInfo.employee && (
                       <div className="flex items-center justify-center flex-1">
                         <p className="text-3xl text-gray-700 font-semibold text-center">
-                          👤 {mockEmployees.find((e) => e.code === basicInfo.employee)?.name || basicInfo.employee}
+                          👤 {findEmpName(basicInfo.employee)}
                         </p>
                       </div>
                     )}
@@ -506,7 +506,12 @@ if (!branchCode || employeesInOffice.length === 0) {
                         id="date"
                         type="date"
                         value={basicInfo.date}
-                        onChange={(e) => setBasicInfo({ ...basicInfo, date: e.target.value })}
+                        onChange={(e) =>
+                          setBasicInfo({
+                            ...basicInfo,
+                            date: e.target.value,
+                          })
+                        }
                         className="border-gray-300 rounded-xl text-sm"
                       />
                     </div>
@@ -514,7 +519,6 @@ if (!branchCode || employeesInOffice.length === 0) {
                     {/* 従業員 */}
                     <div className="space-y-1">
                       <span className="text-gray-900 text-sm">従業員名</span>
-
                       <Select
                         value={basicInfo.employee}
                         onValueChange={(code) =>
@@ -530,20 +534,23 @@ if (!branchCode || employeesInOffice.length === 0) {
                         >
                           <SelectValue placeholder="従業員を選択" />
                         </SelectTrigger>
-
-                        {/* ポータル表示＋z-index強めで絶対隠れない */}
+                        {/* ポップオーバーは Portal 化されるので、z-index だけ強めに */}
                         <SelectContent
                           position="popper"
                           sideOffset={6}
-                          className="z-[100] w-[200px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                          className="z-[100] w-[240px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
                         >
                           {employeesInOffice.map((e) => (
-                            <SelectItem key={e.code} value={e.code} className="
-                              cursor-pointer pr-10                 /* ✓アイコンのための右余白 */
-                              data-[highlighted]:bg-blue-50       /* ← ホバー背景 */
-                              data-[highlighted]:text-blue-700    /* ← ホバー文字色 */
-                              data-[state=checked]:font-medium    /* 選択中は太字 */
-                            ">
+                            <SelectItem
+                              key={e.code}
+                              value={e.code}
+                              className="
+                                cursor-pointer pr-10
+                                data-[highlighted]:bg-blue-50
+                                data-[highlighted]:text-blue-700
+                                data-[state=checked]:font-medium
+                              "
+                            >
                               {e.name}
                             </SelectItem>
                           ))}
@@ -551,11 +558,9 @@ if (!branchCode || employeesInOffice.length === 0) {
                       </Select>
                     </div>
 
-
                     {/* 確認者 */}
                     <div className="space-y-1">
                       <span className="text-gray-900 text-sm">確認者名</span>
-
                       <Select
                         value={basicInfo.supervisor}
                         onValueChange={(code) =>
@@ -571,26 +576,28 @@ if (!branchCode || employeesInOffice.length === 0) {
                         >
                           <SelectValue placeholder="確認者を選択" />
                         </SelectTrigger>
-
                         <SelectContent
                           position="popper"
                           sideOffset={6}
-                          className="z-[100] w-[200px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                          className="z-[100] w-[240px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
                         >
                           {employeesInOffice.map((e) => (
-                            <SelectItem key={e.code} value={e.code} className="
-                              cursor-pointer pr-10                 /* ✓アイコンのための右余白 */
-                              data-[highlighted]:bg-blue-50       /* ← ホバー背景 */
-                              data-[highlighted]:text-blue-700    /* ← ホバー文字色 */
-                              data-[state=checked]:font-medium    /* 選択中は太字 */
-                            ">
+                            <SelectItem
+                              key={e.code}
+                              value={e.code}
+                              className="
+                                cursor-pointer pr-10
+                                data-[highlighted]:bg-blue-50
+                                data-[highlighted]:text-blue-700
+                                data-[state=checked]:font-medium
+                              "
+                            >
                               {e.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
-
                   </div>
                 </CardContent>
               </Card>
@@ -599,16 +606,24 @@ if (!branchCode || employeesInOffice.length === 0) {
             {/* 左列 */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* 体温・体調 */}
-              <Card className={`border-gray-200 ${healthChecks.some((i) => !i.checked) ? "ring-2 ring-amber-200" : ""}`}>
+              <Card
+                className={`border-gray-200 ${
+                  healthChecks.some((i) => !i.checked)
+                    ? "ring-2 ring-amber-200"
+                    : ""
+                }`}
+              >
                 <CardHeader className="pb-3 bg-emerald-50 border-emerald-200">
                   <CardTitle className="text-emerald-800 flex items-center gap-2 text-sm">
                     <Heart className="w-4 h-4 text-emerald-600" />
                     体温・体調チェック
-                    {!healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
-                      <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />
-                    )}
+                    {!healthChecks.some(
+                      (i) => !i.checked && i.comment.trim() === ""
+                    ) && <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />}
                     {healthChecks.some((i) => !i.checked) &&
-                      healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
+                      healthChecks.some(
+                        (i) => !i.checked && i.comment.trim() === ""
+                      ) && (
                         <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />
                       )}
                   </CardTitle>
@@ -624,9 +639,16 @@ if (!branchCode || employeesInOffice.length === 0) {
                         min="35.0"
                         max="42.0"
                         value={basicInfo.temperature}
-                        onChange={(e) => setBasicInfo({ ...basicInfo, temperature: e.target.value })}
+                        onChange={(e) =>
+                          setBasicInfo({
+                            ...basicInfo,
+                            temperature: e.target.value,
+                          })
+                        }
                         className={`w-24 text-sm rounded-xl ${
-                          parseFloat(basicInfo.temperature) >= 37.5 ? "border-red-300 bg-red-50" : "border-gray-300"
+                          parseFloat(basicInfo.temperature) >= 37.5
+                            ? "border-red-300 bg-red-50"
+                            : "border-gray-300"
                         }`}
                       />
                       {parseFloat(basicInfo.temperature) >= 37.5 && (
@@ -650,16 +672,25 @@ if (!branchCode || employeesInOffice.length === 0) {
                             id={item.id}
                             checked={item.checked}
                             onCheckedChange={(checked) =>
-                              updateCheckItem(healthChecks, setHealthChecks, item.id, checked as boolean)
+                              updateCheckItem(
+                                healthChecks,
+                                setHealthChecks,
+                                item.id,
+                                checked as boolean
+                              )
                             }
                             className={`border-gray-300 mt-0.5 ${
-                              item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
+                              item.checked
+                                ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                                : ""
                             }`}
                           />
                           <div className="flex-1">
                             <span
                               className={`leading-relaxed text-sm ${
-                                item.checked ? "text-gray-900" : "text-red-700 font-medium"
+                                item.checked
+                                  ? "text-gray-900"
+                                  : "text-red-700 font-medium"
                               }`}
                             >
                               {item.label}
@@ -678,13 +709,21 @@ if (!branchCode || employeesInOffice.length === 0) {
 
                         {item.requiresComment && (
                           <div className="ml-5 space-y-1">
-                            <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
+                            <span className="text-red-600 text-xs">
+                              詳細をご記入ください（必須）
+                            </span>
                             <Textarea
                               id={`${item.id}-comment`}
                               placeholder="症状や状況の詳細を記入してください"
                               value={item.comment}
                               onChange={(e) =>
-                                updateCheckItem(healthChecks, setHealthChecks, item.id, item.checked, e.target.value)
+                                updateCheckItem(
+                                  healthChecks,
+                                  setHealthChecks,
+                                  item.id,
+                                  item.checked,
+                                  e.target.value
+                                )
                               }
                               className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
                               rows={2}
@@ -727,7 +766,10 @@ if (!branchCode || employeesInOffice.length === 0) {
 
             {/* Step1 保存 */}
             <div className="flex justify-center mt-8 pb-8">
-              <Button onClick={handleStep1Save} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg">
+              <Button
+                onClick={handleStep1Save}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
+              >
                 <Save className="w-5 h-5" />
                 出勤時チェックを保存
               </Button>
@@ -737,7 +779,10 @@ if (!branchCode || employeesInOffice.length === 0) {
           // Step 2
           <div className="max-w-4xl mx-auto">
             <div className="text-center text-3xl font-semibold mb-4">
-              👤 {mockEmployees.find((emp) => emp.code === basicInfo.employee)?.name || "従業員名未設定"}
+              👤{" "}
+              {basicInfo.employee
+                ? findEmpName(basicInfo.employee)
+                : "従業員名未設定"}
             </div>
 
             <div className="mb-8">
@@ -754,19 +799,25 @@ if (!branchCode || employeesInOffice.length === 0) {
               <Button
                 onClick={() => setCurrentStep(1)}
                 variant="outline"
-                className="border-gray-300 text-gray-700 hover:bg-gray-50 px-6 py-3 text-base gap-2"
+                className="border-gray-300 text-gray-700 hover:bg-gray-50 px-6 py-3 text-base rounded-xl gap-2"
               >
                 <ChevronLeft className="w-5 h-5" />
                 出勤時チェックへ
               </Button>
-              <Button onClick={handleFinalSubmit} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg">
+              <Button
+                onClick={handleFinalSubmit}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
+              >
                 <Save className="w-5 h-5" />
                 登録
               </Button>
             </div>
           </div>
-        )}
+        )
+      }
+      
       </div>
+      )} 
     </div>
   );
 
@@ -815,16 +866,28 @@ if (!branchCode || employeesInOffice.length === 0) {
       }
     };
     const hasIssues = items.some((i) => !i.checked);
-    const isComplete = !items.some((i) => !i.checked && i.comment.trim() === "");
+    const isComplete = !items.some(
+      (i) => !i.checked && i.comment.trim() === ""
+    );
 
     return (
-      <Card className={`border-gray-200 ${className} ${hasIssues ? "ring-2 ring-amber-200" : ""}`}>
+      <Card
+        className={`border-gray-200 ${className} ${
+          hasIssues ? "ring-2 ring-amber-200" : ""
+        }`}
+      >
         <CardHeader className={`pb-3 ${getHeaderColors(headerColor)} relative`}>
           <CardTitle className="flex items-center gap-2 text-sm">
-            {Icon && <Icon className={`w-4 h-4 ${getIconColors(headerColor)}`} />}
+            {Icon && (
+              <Icon className={`w-4 h-4 ${getIconColors(headerColor)}`} />
+            )}
             {title}
-            {isComplete && <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />}
-            {hasIssues && !isComplete && <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />}
+            {isComplete && (
+              <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />
+            )}
+            {hasIssues && !isComplete && (
+              <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 pt-4 pb-4">
@@ -834,13 +897,26 @@ if (!branchCode || employeesInOffice.length === 0) {
                 <Checkbox
                   id={item.id}
                   checked={item.checked}
-                  onCheckedChange={(checked) => updateCheckItem(items, setItems, item.id, checked as boolean)}
+                  onCheckedChange={(checked) =>
+                    updateCheckItem(
+                      items,
+                      setItems,
+                      item.id,
+                      checked as boolean
+                    )
+                  }
                   className={`border-gray-300 mt-0.5 ${
-                    item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
+                    item.checked
+                      ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                      : ""
                   }`}
                 />
                 <div className="flex-1">
-                  <span className={`leading-relaxed text-sm ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
+                  <span
+                    className={`leading-relaxed text-sm ${
+                      item.checked ? "text-gray-900" : "text-red-700 font-medium"
+                    }`}
+                  >
                     {item.label}
                   </span>
                   {!item.checked && item.guidance && (
@@ -857,12 +933,22 @@ if (!branchCode || employeesInOffice.length === 0) {
 
               {item.requiresComment && (
                 <div className="ml-5 space-y-1">
-                  <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
+                  <span className="text-red-600 text-xs">
+                    詳細をご記入ください（必須）
+                  </span>
                   <Textarea
                     id={`${item.id}-comment`}
                     placeholder="症状や状況の詳細を記入してください"
                     value={item.comment}
-                    onChange={(e) => updateCheckItem(items, setItems, item.id, item.checked, e.target.value)}
+                    onChange={(e) =>
+                      updateCheckItem(
+                        items,
+                        setItems,
+                        item.id,
+                        item.checked,
+                        e.target.value
+                      )
+                    }
                     className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
                     rows={2}
                   />
@@ -875,3 +961,5 @@ if (!branchCode || employeesInOffice.length === 0) {
     );
   }
 }
+
+

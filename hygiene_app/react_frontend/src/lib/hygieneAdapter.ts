@@ -190,3 +190,27 @@ export function canConfirmRow(opts: {
   if (!userOffice) return false;
   return row.officeName === userOffice;
 }
+
+/* --------------------------------
+ * フォーム画面向け（読取）
+ * -------------------------------- */
+
+// 型を使うなら（任意）
+export type EmployeeRow   = (typeof mockEmployees)[number];
+export type RecordRow     = (typeof mockRecords)[number];
+export type RecordItemRow = (typeof mockRecordItems)[number];
+
+/** ブランチコードで従業員一覧を取得（フォームのプルダウン用） */
+export async function getEmployeesByBranch(branchCode: string): Promise<EmployeeRow[]> {
+  return mockEmployees.filter(e => e.branchCode === branchCode);
+}
+
+/** 当日のレコードと明細を取得（フォームの自動反映用） */
+export async function getTodayRecordWithItems(
+  employeeCode: string,
+  dateISO: string
+): Promise<{ record: RecordRow | null; items: RecordItemRow[] }> {
+  const record = mockRecords.find(r => r.employeeCode === employeeCode && r.date === dateISO) ?? null;
+  const items = record ? mockRecordItems.filter(i => i.recordId === record.id) : [];
+  return { record, items };
+}
