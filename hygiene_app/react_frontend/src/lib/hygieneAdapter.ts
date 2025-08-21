@@ -420,3 +420,4 @@ export function getBranchCodeByOfficeName(name: string): string | null {
   const b = mockBranches.find((x) => x.name === name);
   return b ? b.code : null;
 }
+
