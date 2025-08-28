@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Office, Employee, Record, RecordItem, SupervisorConfirmation
-from rest_framework import serializers
+
 
 class RecordItemWriteSerializer(serializers.Serializer):
     category = serializers.CharField(max_length=100)
