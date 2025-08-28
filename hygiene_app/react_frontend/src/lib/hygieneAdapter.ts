@@ -2,6 +2,22 @@
 import { TODAY_STR } from "@/data/mockDate";
 import { mockBranches, mockEmployees, mockRecords, mockRecordItems } from "@/data";
 
+/* =========================
+ * 共通: APIユーティリティ
+ * ========================= */
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+// 1=APIを使う / 0=モックを使う
+const USE_API = (import.meta.env.VITE_USE_API ?? "1") === "1";
+
+async function apiGet<T>(path: string): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`);
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`${path} GET failed (${r.status}): ${text}`);
+  }
+  return r.json() as Promise<T>;
+}
+
 /** 画面表示用1行 */
 export type StatusJP = "出勤入力済" | "退勤入力済" | "未入力";
 
@@ -202,7 +218,20 @@ export type RecordItemRow = (typeof mockRecordItems)[number];
 
 /** ブランチコードで従業員一覧を取得（フォームのプルダウン用） */
 export async function getEmployeesByBranch(branchCode: string): Promise<EmployeeRow[]> {
-  return mockEmployees.filter(e => e.branchCode === branchCode);
+  if (!USE_API) {
+    return mockEmployees.filter(e => e.branchCode === branchCode);
+  }
+  // API: /api/employees?branch_code=XXX → [{id, code, name, office, office_name}]
+  const apiEmps = await apiGet<Array<{id:number; code:string; name:string; office:number; office_name:string;}>>(
+    `/api/employees?branch_code=${encodeURIComponent(branchCode)}`
+  );
+  // mockの形（code/name/branchCode）に寄せて返す
+  return apiEmps.map(e => ({
+    id: e.id,
+    code: e.code,
+    name: e.name,
+    branchCode, // APIからoffice_codeを返すなら置換
+  })) as unknown as EmployeeRow[];
 }
 
 /** 当日のレコードと明細を取得（フォームの自動反映用） */
@@ -210,8 +239,41 @@ export async function getTodayRecordWithItems(
   employeeCode: string,
   dateISO: string
 ): Promise<{ record: RecordRow | null; items: RecordItemRow[] }> {
-  const record = mockRecords.find(r => r.employeeCode === employeeCode && r.date === dateISO) ?? null;
-  const items = record ? mockRecordItems.filter(i => i.recordId === record.id) : [];
+  if (!USE_API) {
+    const record = mockRecords.find(r => r.employeeCode === employeeCode && r.date === dateISO) ?? null;
+    const items = record ? mockRecordItems.filter(i => i.recordId === record.id) : [];
+    return { record, items };
+  }
+
+  type ApiItem = { id:number; category:string; is_normal:boolean; value:number|string|null; comment:string; };
+  type ApiRecord = { id:number; date:string; employee:number; work_start_time:string|null; work_end_time:string|null; items: ApiItem[] };
+
+  const list = await apiGet<ApiRecord[]>(
+    `/api/records/?employee_code=${encodeURIComponent(employeeCode)}&date=${encodeURIComponent(dateISO)}`
+  );
+  const rec = list[0] ?? null;
+
+  const record = rec
+    ? ({
+        id: rec.id,
+        employeeCode,
+        date: rec.date,
+        work_start_time: rec.work_start_time,
+        work_end_time: rec.work_end_time,
+      } as unknown as RecordRow)
+    : null;
+
+  const items = rec
+    ? (rec.items.map(it => ({
+        id: it.id,
+        recordId: rec.id,
+        category: it.category,
+        is_normal: it.is_normal,
+        value: it.value as any, // mockに合わせて許容
+        comment: it.comment,
+      })) as unknown as RecordItemRow[])
+    : [];
+
   return { record, items };
 }
 
@@ -237,38 +299,55 @@ export async function getDashboardStaffRows(
   branchCode: string,
   dateISO: string
 ): Promise<DashboardStaffRow[]> {
-  const emps = mockEmployees.filter((e) => e.branchCode === branchCode);
+  if (!USE_API) {
+    const emps = mockEmployees.filter((e) => e.branchCode === branchCode);
 
-  return emps.map((emp) => {
-    const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === dateISO);
-    const items = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
+    return emps.map((emp) => {
+      const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === dateISO);
+      const items = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
 
-    const temperatureRaw = items.find((i) => i.category === "temperature")?.value;
-    const temperature =
-      temperatureRaw !== undefined && temperatureRaw !== null
-        ? Number(temperatureRaw)
-        : null;
+      const temperatureRaw = items.find((i) => i.category === "temperature")?.value;
+      const temperature =
+        temperatureRaw !== undefined && temperatureRaw !== null
+          ? Number(temperatureRaw)
+          : null;
 
-    const symptoms = items.some(
-      (i) =>
-        i.is_normal === false &&
-        ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(
-          i.category
-        )
-    );
+      const symptoms = items.some(
+        (i) =>
+          i.is_normal === false &&
+          ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(
+            i.category
+          )
+      );
 
-    const comment = items.find((i) => i.value && i.is_normal === false)?.value ?? "";
+      const comment = items.find((i) => i.value && i.is_normal === false)?.value ?? "";
 
-    return {
-      id: emp.code,
-      name: emp.name,
-      arrivalRegistered: !!rec?.work_start_time,
-      departureRegistered: !!rec?.work_end_time,
-      temperature,
-      symptoms,
-      comment,
-    };
-  });
+      return {
+        id: emp.code,
+        name: emp.name,
+        arrivalRegistered: !!rec?.work_start_time,
+        departureRegistered: !!rec?.work_end_time,
+        temperature,
+        symptoms,
+        comment,
+      };
+    });
+  }
+
+  // API: /api/dashboard?branch_code=...&date=...
+  type ApiRow = {
+    id: string;
+    name: string;
+    arrivalRegistered: boolean;
+    departureRegistered: boolean;
+    temperature: number | null;
+    symptoms: boolean;
+    comment: string;
+  };
+  const data = await apiGet<{ rows: ApiRow[] }>(
+    `/api/dashboard?branch_code=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(dateISO)}`
+  );
+  return data.rows;
 }
 
 // 営業所PIN（またはパスワード）を取得：ダッシュボードの管理者認証で使用
@@ -421,3 +500,47 @@ export function getBranchCodeByOfficeName(name: string): string | null {
   return b ? b.code : null;
 }
 
+// 既存の USE_API, API_BASE はそのまま利用
+type WriteItem = {
+  category: string;
+  is_normal: boolean;
+  value?: string | number | null;
+  comment?: string | null;
+};
+
+export async function submitDailyForm(params: {
+  employeeCode: string;
+  dateISO: string;
+  workStartTime?: string | null; // "08:30" 形式
+  workEndTime?: string | null;   // "17:15" 形式
+  items: WriteItem[];
+}): Promise<void> {
+  if (USE_API) {
+    const payload = {
+      employee_code: params.employeeCode,
+      date: params.dateISO,
+      work_start_time: params.workStartTime ?? null,
+      work_end_time: params.workEndTime ?? null,
+      items: params.items.map(it => ({
+        category: it.category,
+        is_normal: !!it.is_normal,
+        value: it.value == null ? null : String(it.value),
+        comment: it.comment ?? null,
+      })),
+    };
+    const r = await fetch(`${API_BASE}/api/records/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`submit failed: ${r.status} ${t}`);
+    }
+    return;
+  }
+
+  // --- モック保存（既存ローカルストレージの実装があるならそれを呼ぶ）
+  // ここは最小。既存のmock保存ロジックがあれば差し替え。
+  console.warn("USE_API=0 のため、submitDailyForm はモック保存にフォールバックします");
+}

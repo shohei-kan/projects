@@ -1,24 +1,26 @@
 from django.contrib import admin
-from .models import Employee, SanitationCheck
+from .models import Office, Employee, Record, RecordItem, SupervisorConfirmation
+
+@admin.register(Office)
+class OfficeAdmin(admin.ModelAdmin):
+    list_display = ("code", "name")
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ('name', 'department')
+    list_display = ("code", "name", "office")
+    list_filter = ("office",)
+    search_fields = ("code", "name")
 
-@admin.register(SanitationCheck)
-class SanitationCheckAdmin(admin.ModelAdmin):
-    list_display = (
-        'date',
-        'employee',
-        'temperature',
-        'is_feeling_well',
-        'cohabitant_sick',
-        'cough_or_sore_throat',
-        'proper_uniform',
-        'verifier_name',
-        'supervisor_signature'
-    )
-    list_filter = ('employee', 'date', 'is_feeling_well')
-    search_fields = ('employee__name', 'verifier_name')
+class RecordItemInline(admin.TabularInline):
+    model = RecordItem
+    extra = 0
 
-# Register your models here.
+@admin.register(Record)
+class RecordAdmin(admin.ModelAdmin):
+    list_display = ("date", "employee", "work_start_time", "work_end_time")
+    list_filter = ("date", "employee__office")
+    inlines = [RecordItemInline]
+
+@admin.register(SupervisorConfirmation)
+class SupervisorConfirmationAdmin(admin.ModelAdmin):
+    list_display = ("record", "confirmed_by", "confirmed_at")

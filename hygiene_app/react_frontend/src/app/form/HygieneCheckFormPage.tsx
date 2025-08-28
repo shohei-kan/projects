@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 
 // Adapter（モック→APIの差し替えポイント）
-import { getEmployeesByBranch, getTodayRecordWithItems } from "@/lib/hygieneAdapter";
+import { getEmployeesByBranch, getTodayRecordWithItems,submitDailyForm } from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
 
 /* ---------------- Types ---------------- */
@@ -347,33 +347,90 @@ export default function DailyHygieneCheckForm() {
   const findEmpName = (code: string) => employeesInOffice.find((e) => e.code === code)?.name ?? code;
 
   /* ---------- 保存/送信（モックのまま） ---------- */
-  const handleStep1Save = () => {
-    const lists =
-      workType === "work"
-        ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
-        : [healthChecks]; // 休日は体温・体調のみ必須
-    const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
-    if (requireComment) {
-      alert("異常が報告されている項目について、詳細コメントが必要です。");
-      return;
-    }
-    if (!basicInfo.employee || !basicInfo.supervisor) {
-      alert("従業員名と確認者名を入力してください。");
-      return;
-    }
-    alert(workType === "work" ? "出勤時チェックを保存しました" : "休日の体調チェックを保存しました");
-    navigate("/dashboard");
-  };
+  const handleStep1Save = async () => {
+  // バリデーションは既存のまま
+  const lists =
+    workType === "work"
+      ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
+      : [healthChecks];
+  const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
+  if (requireComment) {
+    alert("異常が報告されている項目について、詳細コメントが必要です。");
+    return;
+  }
+  if (!basicInfo.employee || !basicInfo.supervisor) {
+    alert("従業員名と確認者名を入力してください。");
+    return;
+  }
 
-  const handleFinalSubmit = () => {
-    const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
-    if (requireComment) {
-      alert("異常が報告されている項目について、詳細コメントが必要です。");
-      return;
-    }
-    alert("退勤チェックが完了しました");
+  try {
+    await submitDailyForm({
+      employeeCode: basicInfo.employee,
+      dateISO: basicInfo.date,
+      workStartTime: currentStep === 1 ? "08:30" : null, // 出勤チェック時は開始時刻を送信
+      workEndTime: null,
+      items: [
+        { category: "temperature", is_normal: true, value: basicInfo.temperature },
+        ...healthChecks.map((c) => ({
+          category: c.id,
+          is_normal: c.checked,
+          comment: c.comment || null,
+        })),
+        ...respiratoryChecks.map((c) => ({
+          category: c.id,
+          is_normal: c.checked,
+          comment: c.comment || null,
+        })),
+        ...handHygieneChecks.map((c) => ({
+          category: c.id,
+          is_normal: c.checked,
+          comment: c.comment || null,
+        })),
+        ...uniformHygieneChecks.map((c) => ({
+          category: c.id,
+          is_normal: c.checked,
+          comment: c.comment || null,
+        })),
+      ],
+    });
+    alert("出勤時チェックを保存しました！");
     navigate("/dashboard");
-  };
+  } catch (err) {
+    alert("保存に失敗しました: " + (err as Error).message);
+  }
+};
+
+// 既存の handleFinalSubmit を丸ごと置き換え
+const handleFinalSubmit = async () => {
+  const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
+  if (requireComment) {
+    alert("異常が報告されている項目について、詳細コメントが必要です。");
+    return;
+  }
+  if (!basicInfo.employee) {
+    alert("従業員を選択してください。");
+    return;
+  }
+
+  try {
+    await submitDailyForm({
+      employeeCode: basicInfo.employee,
+      dateISO: basicInfo.date,
+      workStartTime: null,
+      workEndTime: "17:30", // 必要なら入力欄を作って置き換え
+      items: postWorkChecks.map((c) => ({
+        category: c.id,
+        is_normal: c.checked,
+        comment: c.comment || null,
+      })),
+    });
+
+    alert("退勤チェックを保存しました！");
+    navigate("/dashboard");
+  } catch (err) {
+    alert("保存に失敗しました: " + (err as Error).message);
+  }
+};
 
   /* ---------------- Render ---------------- */
   return (

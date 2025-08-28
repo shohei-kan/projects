@@ -8,9 +8,9 @@ export interface Branch {
 
 export const mockBranches: Branch[] = [
   {
-    code: "YK1234",
+    code: "KM3076",
     name: "横浜市立馬場小学校",
-    password: "1234",
+    password: "3076",
     created_at: "2025-07-01T09:00:00Z",
     managementPin: "0225"
   },
