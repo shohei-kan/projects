@@ -35,8 +35,9 @@ import {
 } from "lucide-react";
 
 // Adapter（モック→APIの差し替えポイント）
-import { getEmployeesByBranch, getTodayRecordWithItems,submitDailyForm } from "@/lib/hygieneAdapter";
+import { getEmployeesByBranch, getTodayRecordWithItems} from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
+import { saveDailyCheck } from "@/lib/saveDailyCheck";
 
 /* ---------------- Types ---------------- */
 interface CheckItem {
@@ -119,6 +120,8 @@ export default function DailyHygieneCheckForm() {
     supervisor: "",
     temperature: "36.0",
   });
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // 勤務区分（出勤日／休み）
   const [workType, setWorkType] = useState<WorkType>("work");
@@ -259,7 +262,7 @@ export default function DailyHygieneCheckForm() {
 
     let aborted = false;
     (async () => {
-      const { record, items } = await getTodayRecordWithItems(code, TODAY_STR);
+      const { record, items } = await getTodayRecordWithItems(code, basicInfo.date);
       if (aborted) return;
 
       // レコードがあれば「出勤日」に寄せる（※手動切替は尊重）
@@ -346,91 +349,126 @@ export default function DailyHygieneCheckForm() {
 
   const findEmpName = (code: string) => employeesInOffice.find((e) => e.code === code)?.name ?? code;
 
-  /* ---------- 保存/送信（モックのまま） ---------- */
-  const handleStep1Save = async () => {
-  // バリデーションは既存のまま
-  const lists =
-    workType === "work"
-      ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
-      : [healthChecks];
-  const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
-  if (requireComment) {
-    alert("異常が報告されている項目について、詳細コメントが必要です。");
-    return;
-  }
-  if (!basicInfo.employee || !basicInfo.supervisor) {
-    alert("従業員名と確認者名を入力してください。");
-    return;
-  }
-
-  try {
-    await submitDailyForm({
-      employeeCode: basicInfo.employee,
-      dateISO: basicInfo.date,
-      workStartTime: currentStep === 1 ? "08:30" : null, // 出勤チェック時は開始時刻を送信
-      workEndTime: null,
-      items: [
-        { category: "temperature", is_normal: true, value: basicInfo.temperature },
-        ...healthChecks.map((c) => ({
-          category: c.id,
-          is_normal: c.checked,
-          comment: c.comment || null,
-        })),
-        ...respiratoryChecks.map((c) => ({
-          category: c.id,
-          is_normal: c.checked,
-          comment: c.comment || null,
-        })),
-        ...handHygieneChecks.map((c) => ({
-          category: c.id,
-          is_normal: c.checked,
-          comment: c.comment || null,
-        })),
-        ...uniformHygieneChecks.map((c) => ({
-          category: c.id,
-          is_normal: c.checked,
-          comment: c.comment || null,
-        })),
-      ],
+    /* ---------- 送信ヘルパ（items整形・コメント要約） ---------- */
+  const collectStep1Items = () => {
+    const toItem = (c: CheckItem) => ({
+      category: c.id,
+      is_normal: c.checked,
+      value: !c.checked && c.comment.trim() ? c.comment.trim() : undefined,
     });
-    alert("出勤時チェックを保存しました！");
-    navigate("/dashboard");
-  } catch (err) {
-    alert("保存に失敗しました: " + (err as Error).message);
-  }
-};
+    return [
+      { category: "temperature", is_normal: true, value: String(basicInfo.temperature) },
+      ...healthChecks.map(toItem),
+      ...(workType === "work" ? respiratoryChecks.map(toItem) : []),
+      ...(workType === "work" ? handHygieneChecks.map(toItem) : []),
+      ...(workType === "work" ? uniformHygieneChecks.map(toItem) : []),
+    ];
+  };
+
+  const collectStep2Items = () => {
+    const toItem = (c: CheckItem) => ({
+      category: c.id,
+      is_normal: c.checked,
+      value: !c.checked && c.comment.trim() ? c.comment.trim() : undefined,
+    });
+    return postWorkChecks.map(toItem);
+  };
+
+  const buildSummaryComment = (isStep2: boolean) => {
+    const parts: string[] = [];
+    const temp = parseFloat(basicInfo.temperature);
+    if (!Number.isNaN(temp) && temp >= 37.5) parts.push(`体温${basicInfo.temperature}℃`);
+    const pushFrom = (arr: CheckItem[]) =>
+      arr.filter(i => !i.checked && i.comment.trim()).forEach(i => parts.push(`${i.label}: ${i.comment.trim()}`));
+    pushFrom(healthChecks);
+    if (workType === "work") {
+      pushFrom(respiratoryChecks);
+      pushFrom(handHygieneChecks);
+      pushFrom(uniformHygieneChecks);
+    }
+    if (isStep2) pushFrom(postWorkChecks);
+    return parts.length ? parts.join(" / ") : undefined;
+  };
+
+  /* ---------- 保存/送信（モックのまま） ---------- */
+    const handleStep1Save = async () => {
+    // バリデーションは既存のまま
+    const lists =
+      workType === "work"
+        ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
+        : [healthChecks];
+    const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
+    if (requireComment) {
+      alert("異常が報告されている項目について、詳細コメントが必要です。");
+      return;
+    }
+    if (!basicInfo.employee || !basicInfo.supervisor) {
+      alert("従業員名と確認者名を入力してください。");
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setErrorMsg(null);
+      const res = await saveDailyCheck({
+        employeeCode: basicInfo.employee,
+        dateISO: basicInfo.date,
+        step: 1,
+        temperature: parseFloat(basicInfo.temperature),
+        items: collectStep1Items(),
+        comment: buildSummaryComment(false),
+      });
+      setSaving(false);
+      if (!res.ok) {
+        setErrorMsg(res.message);
+        alert("保存に失敗しました: " + res.message);
+        return;
+      }
+      alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
+      navigate("/dashboard");
+    } catch (err) {
+      setSaving(false);
+      alert("保存に失敗しました: " + (err as Error).message);
+    }
+  };
+
 
 // 既存の handleFinalSubmit を丸ごと置き換え
-const handleFinalSubmit = async () => {
-  const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
-  if (requireComment) {
-    alert("異常が報告されている項目について、詳細コメントが必要です。");
-    return;
-  }
-  if (!basicInfo.employee) {
-    alert("従業員を選択してください。");
-    return;
-  }
+  const handleFinalSubmit = async () => {
+    const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
+    if (requireComment) {
+      alert("異常が報告されている項目について、詳細コメントが必要です。");
+      return;
+    }
+    if (!basicInfo.employee) {
+      alert("従業員を選択してください。");
+      return;
+    }
 
-  try {
-    await submitDailyForm({
-      employeeCode: basicInfo.employee,
-      dateISO: basicInfo.date,
-      workStartTime: null,
-      workEndTime: "17:30", // 必要なら入力欄を作って置き換え
-      items: postWorkChecks.map((c) => ({
-        category: c.id,
-        is_normal: c.checked,
-        comment: c.comment || null,
-      })),
-    });
-
-    alert("退勤チェックを保存しました！");
-    navigate("/dashboard");
-  } catch (err) {
-    alert("保存に失敗しました: " + (err as Error).message);
-  }
-};
+    try {
+      setSaving(true);
+      setErrorMsg(null);
+      const res = await saveDailyCheck({
+        employeeCode: basicInfo.employee,
+        dateISO: basicInfo.date,
+        step: 2,
+        temperature: parseFloat(basicInfo.temperature),
+        items: collectStep2Items(),
+        comment: buildSummaryComment(true),
+      });
+      setSaving(false);
+      if (!res.ok) {
+        setErrorMsg(res.message);
+        alert("保存に失敗しました: " + res.message);
+        return;
+      }
+      alert("退勤チェックを保存しました！");
+      navigate("/dashboard");
+    } catch (err) {
+      setSaving(false);
+      alert("保存に失敗しました: " + (err as Error).message);
+    }
+  };
 
   /* ---------------- Render ---------------- */
   return (
@@ -800,7 +838,7 @@ const handleFinalSubmit = async () => {
 
                 {/* 保存 */}
                 <div className="flex justify-center mt-8 pb-8">
-                  <Button onClick={handleStep1Save} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl">
+                  <Button disabled={saving} onClick={handleStep1Save} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl">
                     <Save className="w-5 h-5" />
                     {workType === "work" ? "出勤時チェックを保存" : "休日の体調チェックを保存"}
                   </Button>
@@ -834,7 +872,7 @@ const handleFinalSubmit = async () => {
                     <ChevronLeft className="w-5 h-5" />
                     出勤時チェックへ
                   </Button>
-                  <Button onClick={handleFinalSubmit} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl">
+                  <Button disabled={saving} onClick={handleFinalSubmit} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl">
                     <Save className="w-5 h-5" />
                     登録
                   </Button>

@@ -56,7 +56,7 @@ const branchSchema = z.object({
     .string()
     .trim()
     .min(1, "営業所コードを入力してください。")
-    .regex(/^[A-Za-z]{2}\d{4}$/, "英字2文字＋数字4桁で入力してください（例：YK1234）。"),
+    .regex(/^[A-Za-z]{2}\d{4}$/, "英字2文字＋数字4桁で入力してください（例：KM3076）。"),
   password: z
     .string()
     .trim()

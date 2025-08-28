@@ -63,7 +63,7 @@ const COOLDOWN_MINUTES = 5;
 /* ---------- component ---------- */
 export default function HygieneDashboard() {
   const navigate = useNavigate();
-  const today = new Date("2025-08-25");
+  const today = new Date(TODAY_STR);
 
   // session
   const [session, setSession] = useState<SessionPayload | null>(() => loadSession());
@@ -104,7 +104,7 @@ export default function HygieneDashboard() {
       try {
         setLoading(true);
         setLoadError(null);
-        const rows = await getDashboardStaffRows(branchCode,"2025-08-25");
+        const rows = await getDashboardStaffRows(branchCode,TODAY_STR);
         if (!aborted) setStaffRecords(rows);
       } catch {
         if (!aborted) setLoadError("一覧の取得に失敗しました");

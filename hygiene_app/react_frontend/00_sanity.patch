@@ -1,0 +1,7 @@
+diff --git a/src/app/form/HygieneCheckFormPage.tsx b/src/app/form/HygieneCheckFormPage.tsx
+--- a/src/app/form/HygieneCheckFormPage.tsx
++++ b/src/app/form/HygieneCheckFormPage.tsx
+@@ -1,2 +1,3 @@
+ // src/app/form/HygieneCheckFormPage.tsx
+ "use client";
++// PATCH_SANITY: ok

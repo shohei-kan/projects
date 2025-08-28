@@ -2,11 +2,20 @@
 import { TODAY_STR } from "@/data/mockDate";
 import { mockBranches, mockEmployees, mockRecords, mockRecordItems } from "@/data";
 
+// --- debug: build-time env を確認（あとで消してOK） ---
+if (typeof window !== "undefined") {
+  (window as any).__ENV__ = {
+    VITE_USE_API: import.meta.env.VITE_USE_API,
+    VITE_API_BASE: import.meta.env.VITE_API_BASE,
+  };
+  console.info("[env]", (window as any).__ENV__);
+}
+
 /* =========================
  * 共通: APIユーティリティ
  * ========================= */
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
-// 1=APIを使う / 0=モックを使う
+// 1=APIを使う / 0=ローカル(LS)・モックを使う
 const USE_API = (import.meta.env.VITE_USE_API ?? "1") === "1";
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -18,11 +27,46 @@ async function apiGet<T>(path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-/** 画面表示用1行 */
+/* =========================
+ * LocalStorage スナップショット
+ * ========================= */
+const LS_RECORDS_KEY = "records.snapshot.v1";
+const LS_ITEMS_KEY = "recordItems.snapshot.v1";
+
+type LSStatus = "未入力" | "出勤入力済" | "退勤入力済";
+type LSRecord = {
+  id: string; // `${date}-${employeeCode}`
+  employeeCode: string;
+  date: string; // YYYY-MM-DD
+  work_start_time?: string;
+  work_end_time?: string;
+  status: LSStatus;
+  temperature?: number;
+  comment?: string;
+};
+type LSItem = {
+  recordId: string; // LSRecord.id
+  category: string;
+  is_normal: boolean;
+  value?: string;
+};
+
+function loadLS<T>(key: string, fallback: T): T {
+  try {
+    const s = localStorage.getItem(key);
+    return s ? (JSON.parse(s) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/* =========================
+ * 画面表示用の型
+ * ========================= */
 export type StatusJP = "出勤入力済" | "退勤入力済" | "未入力";
 
 export type HygieneRecordRow = {
-  /** 1日×従業員で一意（ `${date}-${employeeCode}` 推奨 ） */
+  /** 1日×従業員で一意（ `${date}-${employeeCode}` ） */
   id: string;
   employeeCode: string;
   employeeName: string;
@@ -37,7 +81,7 @@ export type HygieneRecordRow = {
 export type UserRole = "hq_admin" | "branch_manager";
 
 /* --------------------------------
- * オフィス名⇔コード、従業員検索のマップ
+ * オフィス名⇔コード、従業員検索のマップ（モック名簿基準）
  * -------------------------------- */
 const officeNameToCodes = (() => {
   const m = new Map<string, string[]>();
@@ -61,12 +105,10 @@ export const getOfficeNames = (): string[] => Array.from(officeNameToCodes.keys(
 export const getEmployeeNames = (officeName?: string): string[] => {
   if (!officeName || !officeNameToCodes.has(officeName)) {
     return mockEmployees.map((e) => e.name);
-  }
+    }
   const codes = officeNameToCodes.get(officeName)!;
   return mockEmployees.filter((e) => codes.includes(e.branchCode)).map((e) => e.name);
 };
-
-const toISO = (d: Date) => d.toISOString().slice(0, 10);
 
 const dayListOfCurrentMonth = (refISO: string) => {
   const ref = new Date(refISO);
@@ -78,24 +120,19 @@ const dayListOfCurrentMonth = (refISO: string) => {
   return list;
 };
 
-const statusFromRecord = (rec: { work_start_time: string | null; work_end_time: string | null }): StatusJP => {
-  if (rec.work_end_time) return "退勤入力済";
-  if (rec.work_start_time) return "出勤入力済";
+// これに差し替え
+const statusFromRecord = (
+  rec: { work_start_time?: string | null; work_end_time?: string | null } | null | undefined
+): StatusJP => {
+  if (!rec) return "未入力";
+  if (rec.work_end_time != null && rec.work_end_time !== "") return "退勤入力済";
+  if (rec.work_start_time != null && rec.work_start_time !== "") return "出勤入力済";
   return "未入力";
 };
 
-const abnormalItemsForRecordId = (recordId: number): string[] => {
-  return mockRecordItems
-    .filter((it) => it.recordId === recordId && it.is_normal === false)
-    .map((it) => it.category);
-};
-
-const hasCommentForRecordId = (recordId: number): boolean => {
-  return mockRecordItems.some((it) => it.recordId === recordId && it.value && String(it.value).trim().length > 0);
-};
 
 /* --------------------------------
- * モックから表データ作成
+ * 表データ（ローカル優先で構築）
  * -------------------------------- */
 
 /** 日次（営業所内の全従業員） */
@@ -103,7 +140,31 @@ export function getDailyRows(officeName: string, dateISO: string): HygieneRecord
   const codes = officeNameToCodes.get(officeName) ?? [];
   const emps = mockEmployees.filter((e) => codes.includes(e.branchCode));
 
+  // LSを読んで当日分をマップ化
+  const lsRecs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []).filter((r) => r.date === dateISO);
+  const lsItems = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
+  const lsByEmp = new Map(lsRecs.map((r) => [r.employeeCode, r]));
+
   return emps.map((e) => {
+    const ls = lsByEmp.get(e.code);
+    if (ls) {
+      const its = lsItems.filter((i) => i.recordId === ls.id);
+      const abnormal = its.filter((i) => i.is_normal === false).map((i) => i.category);
+      const hasC = its.some((i) => i.is_normal === false && (i.value ?? "").trim().length > 0);
+      return {
+        id: ls.id,
+        employeeCode: e.code,
+        employeeName: e.name,
+        officeName: branchCodeToOfficeName.get(e.branchCode) ?? e.branchCode,
+        date: dateISO,
+        abnormalItems: abnormal,
+        hasComment: hasC,
+        status: statusFromRecord(ls),
+        supervisorConfirmed: loadSupervisorConfirm(ls.id) ?? false,
+      };
+    }
+
+    // LSが無いときはモックで埋める（後方互換）
     const rec = mockRecords.find((r) => r.employeeCode === e.code && r.date === dateISO);
     if (!rec) {
       return {
@@ -118,8 +179,12 @@ export function getDailyRows(officeName: string, dateISO: string): HygieneRecord
         supervisorConfirmed: false,
       };
     }
-    const abns = abnormalItemsForRecordId(rec.id);
-    const hasC = hasCommentForRecordId(rec.id);
+    const abns = mockRecordItems
+      .filter((it) => it.recordId === rec.id && it.is_normal === false)
+      .map((it) => it.category);
+    const hasC = mockRecordItems.some(
+      (it) => it.recordId === rec.id && it.is_normal === false && it.value && String(it.value).trim().length > 0
+    );
     return {
       id: `${dateISO}-${e.code}`,
       employeeCode: e.code,
@@ -129,7 +194,7 @@ export function getDailyRows(officeName: string, dateISO: string): HygieneRecord
       abnormalItems: abns,
       hasComment: hasC,
       status: statusFromRecord(rec),
-      supervisorConfirmed: false, // 保存された確認があれば後で上書き
+      supervisorConfirmed: false,
     };
   });
 }
@@ -142,7 +207,28 @@ export function getMonthRows(employeeName: string, monthBaseISO = TODAY_STR): Hy
   const dates = dayListOfCurrentMonth(monthBaseISO);
   const officeName = branchCodeToOfficeName.get(emp.branchCode) ?? emp.branchCode;
 
+  const lsRecs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []);
+  const lsItems = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
+
   const rows = dates.map((iso) => {
+    const ls = lsRecs.find((r) => r.employeeCode === emp.code && r.date === iso);
+    if (ls) {
+      const its = lsItems.filter((i) => i.recordId === ls.id);
+      const abnormal = its.filter((i) => i.is_normal === false).map((i) => i.category);
+      const hasC = its.some((i) => i.is_normal === false && (i.value ?? "").trim().length > 0);
+      return {
+        id: ls.id,
+        employeeCode: emp.code,
+        employeeName: emp.name,
+        officeName,
+        date: iso,
+        abnormalItems: abnormal,
+        hasComment: hasC,
+        status: statusFromRecord(ls),
+        supervisorConfirmed: loadSupervisorConfirm(ls.id) ?? false,
+      } as HygieneRecordRow;
+    }
+
     const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === iso);
     if (!rec) {
       return {
@@ -157,8 +243,12 @@ export function getMonthRows(employeeName: string, monthBaseISO = TODAY_STR): Hy
         supervisorConfirmed: false,
       } as HygieneRecordRow;
     }
-    const abns = abnormalItemsForRecordId(rec.id);
-    const hasC = hasCommentForRecordId(rec.id);
+    const abns = mockRecordItems
+      .filter((it) => it.recordId === rec.id && it.is_normal === false)
+      .map((it) => it.category);
+    const hasC = mockRecordItems.some(
+      (it) => it.recordId === rec.id && it.is_normal === false && it.value && String(it.value).trim().length > 0
+    );
     return {
       id: `${iso}-${emp.code}`,
       employeeCode: emp.code,
@@ -177,7 +267,7 @@ export function getMonthRows(employeeName: string, monthBaseISO = TODAY_STR): Hy
 }
 
 /* --------------------------------
- * 責任者確認（今は localStorage。API化時はここを差し替え）
+ * 責任者確認（localStorage）
  * -------------------------------- */
 const CONFIRM_STORE_KEY = "supervisorConfirmations.v1";
 
@@ -195,43 +285,94 @@ export function loadSupervisorConfirm(recordId: string): boolean | undefined {
   return map[recordId];
 }
 
+// 追加：責任者が確認ボタンを押せるかの判定
 export function canConfirmRow(opts: {
   role: UserRole;
   row: HygieneRecordRow;
-  userOffice?: string;
+  userOffice?: string | null;
 }): boolean {
   const { role, row, userOffice } = opts;
-  if (row.status === "未入力") return false;
-  if (role === "hq_admin") return true;
-  if (!userOffice) return false;
-  return row.officeName === userOffice;
+  if (row.status === "未入力") return false;      // 未入力は確認不可
+  if (role === "hq_admin") return true;           // 本部は全件OK
+  if (!userOffice) return false;                  // 営業所が不明なら不可
+  return row.officeName === userOffice;           // 同一営業所のみOK
 }
 
 /* --------------------------------
  * フォーム画面向け（読取）
  * -------------------------------- */
-
-// 型を使うなら（任意）
-export type EmployeeRow   = (typeof mockEmployees)[number];
-export type RecordRow     = (typeof mockRecords)[number];
+// 既存のモック型に合わせたエイリアス（型目的のみ）
+export type EmployeeRow = (typeof mockEmployees)[number];
+export type RecordRow = (typeof mockRecords)[number];
 export type RecordItemRow = (typeof mockRecordItems)[number];
 
 /** ブランチコードで従業員一覧を取得（フォームのプルダウン用） */
+// src/lib/hygieneAdapter.ts
 export async function getEmployeesByBranch(branchCode: string): Promise<EmployeeRow[]> {
-  if (!USE_API) {
-    return mockEmployees.filter(e => e.branchCode === branchCode);
+  const useApi = (import.meta.env.VITE_USE_API ?? "1") === "1";
+
+  // 正規化ヘルパ
+  const normalizeCode = (s: string | undefined | null) =>
+    (s ?? "").trim().replace(/[\u3000\s-]/g, "").toUpperCase();
+  const normalizeName = (s: string | undefined | null) =>
+    (s ?? "").trim().replace(/[\u3000\s]/g, ""); // 日本語名は大文字化しない
+
+  const bc = normalizeCode(branchCode);
+
+  // スナップショット/モックを読む
+  const readSnapshot = (): EmployeeRow[] => {
+    const raw = localStorage.getItem("employees.snapshot.v1");
+    return raw ? (JSON.parse(raw) as EmployeeRow[]) : (mockEmployees as EmployeeRow[]);
+  };
+
+  // ===== APIを使わない（推奨の開発モード） =====
+  if (!useApi) {
+    const src = readSnapshot();
+
+    // 1) ブランチコード一致（正規化比較）
+    let list = src.filter((e: any) => normalizeCode((e as any).branchCode) === bc);
+
+    // 2) 0件なら、引数が「営業所名」だった可能性を考慮（完全一致/空白無視）
+    if (list.length === 0) {
+      const byName = mockBranches.find(
+        (b) =>
+          normalizeName(b.name) === normalizeName(branchCode) ||
+          normalizeName(b.code) === normalizeName(branchCode)
+      );
+      if (byName) {
+        const code = byName.code;
+        list = src.filter((e: any) => normalizeCode((e as any).branchCode) === normalizeCode(code));
+      }
+    }
+
+    // 3) まだ0件なら、本当に該当なし → 混入防止のため **空配列** を返す
+    if (list.length === 0) {
+      console.warn(
+        "[employees] 該当ブランチなし:",
+        branchCode,
+        "（sessionのbranchCodeがモックと不一致の可能性）"
+      );
+    }
+    return list as EmployeeRow[];
   }
-  // API: /api/employees?branch_code=XXX → [{id, code, name, office, office_name}]
-  const apiEmps = await apiGet<Array<{id:number; code:string; name:string; office:number; office_name:string;}>>(
-    `/api/employees?branch_code=${encodeURIComponent(branchCode)}`
-  );
-  // mockの形（code/name/branchCode）に寄せて返す
-  return apiEmps.map(e => ({
-    id: e.id,
-    code: e.code,
-    name: e.name,
-    branchCode, // APIからoffice_codeを返すなら置換
-  })) as unknown as EmployeeRow[];
+
+  // ===== APIモード：失敗/0件なら「厳格に空配列返す」（混入防止） =====
+  try {
+    const apiEmps = await apiGet<
+      Array<{ id: number; code: string; name: string; office: number; office_name: string }>
+    >(`/api/employees?branch_code=${encodeURIComponent(branchCode)}`);
+
+    if (apiEmps.length > 0) {
+      return apiEmps.map(
+        (e) => ({ id: e.id, code: e.code, name: e.name, branchCode }) as unknown as EmployeeRow
+      );
+    }
+    console.warn("[employees] API 0件:", branchCode);
+    return [];
+  } catch (e) {
+    console.warn("[employees] API失敗:", e);
+    return [];
+  }
 }
 
 /** 当日のレコードと明細を取得（フォームの自動反映用） */
@@ -240,13 +381,49 @@ export async function getTodayRecordWithItems(
   dateISO: string
 ): Promise<{ record: RecordRow | null; items: RecordItemRow[] }> {
   if (!USE_API) {
-    const record = mockRecords.find(r => r.employeeCode === employeeCode && r.date === dateISO) ?? null;
-    const items = record ? mockRecordItems.filter(i => i.recordId === record.id) : [];
-    return { record, items };
+    const id = `${dateISO}-${employeeCode}`;
+    const recs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []);
+    const items = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
+    const r = recs.find((x) => x.id === id) ?? null;
+    const its = items.filter((i) => i.recordId === id);
+
+    if (r) {
+      const record = {
+        id: 0, // 使われないのでダミー
+        employeeCode: r.employeeCode,
+        date: r.date,
+        work_start_time: r.work_start_time ?? null,
+        work_end_time: r.work_end_time ?? null,
+      } as unknown as RecordRow;
+      const rows = its.map(
+        (it, idx) =>
+          ({
+            id: idx,
+            recordId: 0, // 使わない
+            category: it.category,
+            is_normal: it.is_normal,
+            value: it.value ?? null,
+            comment: it.value ?? null,
+          }) as unknown as RecordItemRow
+      );
+      return { record, items: rows };
+    }
+
+    // 互換: 既存モックにも一応フォールバック
+    const rec = mockRecords.find((x) => x.employeeCode === employeeCode && x.date === dateISO) ?? null;
+    const its2 = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
+    return { record: rec as unknown as RecordRow, items: its2 as unknown as RecordItemRow[] };
   }
 
-  type ApiItem = { id:number; category:string; is_normal:boolean; value:number|string|null; comment:string; };
-  type ApiRecord = { id:number; date:string; employee:number; work_start_time:string|null; work_end_time:string|null; items: ApiItem[] };
+  type ApiItem = { id: number; category: string; is_normal: boolean; value: number | string | null; comment: string };
+  type ApiRecord = {
+    id: number;
+    date: string;
+    employee: number;
+    work_start_time: string | null;
+    work_end_time: string | null;
+    items: ApiItem[];
+  };
 
   const list = await apiGet<ApiRecord[]>(
     `/api/records/?employee_code=${encodeURIComponent(employeeCode)}&date=${encodeURIComponent(dateISO)}`
@@ -264,20 +441,25 @@ export async function getTodayRecordWithItems(
     : null;
 
   const items = rec
-    ? (rec.items.map(it => ({
-        id: it.id,
-        recordId: rec.id,
-        category: it.category,
-        is_normal: it.is_normal,
-        value: it.value as any, // mockに合わせて許容
-        comment: it.comment,
-      })) as unknown as RecordItemRow[])
+    ? (rec.items.map(
+        (it) =>
+          ({
+            id: it.id,
+            recordId: rec.id,
+            category: it.category,
+            is_normal: it.is_normal,
+            value: it.value as any,
+            comment: it.comment,
+          }) as unknown as RecordItemRow
+      ) as unknown as RecordItemRow[])
     : [];
 
   return { record, items };
 }
 
-// --- Dashboard 用の型（ダッシュボードが今使っている形） ---
+/* --------------------------------
+ * Dashboard 用
+ * -------------------------------- */
 export type DashboardStaffRow = {
   id: string;
   name: string;
@@ -295,32 +477,54 @@ export function getBranchNameByCode(code?: string | null): string {
 }
 
 // ダッシュボード1日の一覧
-export async function getDashboardStaffRows(
-  branchCode: string,
-  dateISO: string
-): Promise<DashboardStaffRow[]> {
+export async function getDashboardStaffRows(branchCode: string, dateISO: string): Promise<DashboardStaffRow[]> {
   if (!USE_API) {
     const emps = mockEmployees.filter((e) => e.branchCode === branchCode);
 
+    const recs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []).filter((r) => r.date === dateISO);
+    const items = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
+
+    const byEmp = new Map(recs.map((r) => [r.employeeCode, r]));
     return emps.map((emp) => {
+      // ① LSにあればそれを優先
+      const lr = byEmp.get(emp.code);
+      if (lr) {
+        const its = items.filter((i) => i.recordId === lr.id);
+        const temperatureRaw = its.find((i) => i.category === "temperature")?.value;
+        const temperature =
+          temperatureRaw !== undefined && temperatureRaw !== null && temperatureRaw !== ""
+            ? Number(temperatureRaw)
+            : null;
+        const symptoms = its.some(
+          (i) =>
+            i.is_normal === false &&
+            ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
+        );
+        const comment = its.find((i) => i.is_normal === false && (i.value ?? "").trim().length > 0)?.value ?? "";
+
+        return {
+          id: emp.code,
+          name: emp.name,
+          arrivalRegistered: !!lr.work_start_time,
+          departureRegistered: !!lr.work_end_time,
+          temperature,
+          symptoms,
+          comment,
+        };
+      }
+
+      // ② 無ければモックにフォールバック
       const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === dateISO);
-      const items = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
-
-      const temperatureRaw = items.find((i) => i.category === "temperature")?.value;
+      const its2 = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
+      const temperatureRaw = its2.find((i) => i.category === "temperature")?.value;
       const temperature =
-        temperatureRaw !== undefined && temperatureRaw !== null
-          ? Number(temperatureRaw)
-          : null;
-
-      const symptoms = items.some(
+        temperatureRaw !== undefined && temperatureRaw !== null ? Number(temperatureRaw) : null;
+      const symptoms = its2.some(
         (i) =>
           i.is_normal === false &&
-          ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(
-            i.category
-          )
+          ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
       );
-
-      const comment = items.find((i) => i.value && i.is_normal === false)?.value ?? "";
+      const comment = its2.find((i) => i.value && i.is_normal === false)?.value ?? "";
 
       return {
         id: emp.code,
@@ -350,28 +554,10 @@ export async function getDashboardStaffRows(
   return data.rows;
 }
 
-// 営業所PIN（またはパスワード）を取得：ダッシュボードの管理者認証で使用
-export async function getBranchExpectedPin(branchCode: string): Promise<string | null> {
-  const b = mockBranches.find((x) => x.code === branchCode) as
-    | { managementPin?: string | number; password?: string | number }
-    | undefined;
-
-  if (!b) return null;
-
-  // managementPin があれば優先、なければ password を使う
-  const pinRaw = b.managementPin ?? b.password;
-  if (pinRaw == null) return null;
-
-  // 数値でも文字列でも受け取り、4桁ゼロパディングして返す
-  const s = String(pinRaw);
-  return /^\d+$/.test(s) ? s.padStart(4, "0") : s;
-}
-
-// ===== 管理画面：カテゴリ → ラベル/セクション辞書 =====
-export const CATEGORY_LABELS: Record<
-  string,
-  { label: string; section: string }
-> = {
+/* --------------------------------
+ * 管理画面：詳細取得（ラベル付き）
+ * -------------------------------- */
+export const CATEGORY_LABELS: Record<string, { label: string; section: string }> = {
   temperature: { label: "体温", section: "体温・体調" },
 
   no_health_issues: { label: "体調異常なし", section: "体温・体調" },
@@ -389,7 +575,6 @@ export const CATEGORY_LABELS: Record<
   proper_handwashing: { label: "手洗い実施", section: "作業後" },
 };
 
-// ===== 管理画面：詳細取得（ラベル付きアイテム返却） =====
 export async function getRecordDetail(row: HygieneRecordRow): Promise<
   HygieneRecordRow & {
     comment: string;
@@ -402,45 +587,48 @@ export async function getRecordDetail(row: HygieneRecordRow): Promise<
     }[];
   }
 > {
-  // 該当レコード
-  const rec =
-    mockRecords.find(
-      (r) =>
-        r.employeeCode === row.employeeCode && r.date === row.date
-    ) ?? null;
+  // まずLSで探す
+  const itemsLS = loadLS<LSItem[]>(LS_ITEMS_KEY, []).filter((i) => i.recordId === row.id);
+  if (itemsLS.length > 0) {
+    const items = itemsLS.map((it) => {
+      const meta = CATEGORY_LABELS[it.category] ?? { label: it.category, section: "" };
+      return {
+        category: it.category,
+        label: meta.label,
+        section: meta.section,
+        is_normal: !!it.is_normal,
+        value: it.value ?? null,
+      };
+    });
+    const comment =
+      items.filter((i) => i.is_normal === false && i.value).map((i) => `${i.label}: ${i.value}`).join(" ／ ") || "";
+    return { ...row, comment, items };
+  }
 
-  const itemsRaw = rec
-    ? mockRecordItems.filter((i) => i.recordId === rec.id)
-    : [];
-
+  // フォールバック：モック
+  const rec = mockRecords.find((r) => `${r.date}-${r.employeeCode}` === row.id) ?? null;
+  const itemsRaw = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
   const items = itemsRaw.map((it) => {
-    const meta = CATEGORY_LABELS[it.category] ?? {
-      label: it.category,
-      section: "",
-    };
+    const meta = CATEGORY_LABELS[it.category] ?? { label: it.category, section: "" };
     return {
       category: it.category,
       label: meta.label,
       section: meta.section,
       is_normal: !!it.is_normal,
-      value: it.value ?? null,
+      value: (it as any).value ?? null,
     };
   });
-
-  // 異常のコメントをざっくりまとめる（必要ならAPI化時に差し替え）
   const comment =
-    items
-      .filter((i) => i.is_normal === false && i.value)
-      .map((i) => `${i.label}: ${i.value}`)
-      .join(" ／ ") || "";
-
+    items.filter((i) => i.is_normal === false && i.value).map((i) => `${i.label}: ${i.value}`).join(" ／ ") || "";
   return { ...row, comment, items };
 }
 
-// ===== 従業員一覧：アダプタAPI（ローカル保存でモックを上書き） =====
+/* --------------------------------
+ * 従業員一覧：アダプタAPI（ローカル保存でモックを上書き）
+ * -------------------------------- */
 export type EmployeePosition = "general" | "branch_admin" | "sub_manager" | "manager";
 export type EmployeeDTO = {
-  code: string;       // 個人コード（6桁）
+  code: string; // 個人コード（6桁）
   name: string;
   branchCode: string; // 営業所コード
   position: EmployeePosition;
@@ -452,7 +640,6 @@ const EMP_STORE_KEY = "employees.snapshot.v1";
 export async function listEmployees(): Promise<EmployeeDTO[]> {
   const raw = localStorage.getItem(EMP_STORE_KEY);
   if (raw) return JSON.parse(raw) as EmployeeDTO[];
-  // モックを EmployeeDTO として返す
   return mockEmployees as EmployeeDTO[];
 }
 
@@ -500,7 +687,9 @@ export function getBranchCodeByOfficeName(name: string): string | null {
   return b ? b.code : null;
 }
 
-// 既存の USE_API, API_BASE はそのまま利用
+/* --------------------------------
+ * 既存 submit（API用）。ローカル時は saveDailyCheck を使う想定
+ * -------------------------------- */
 type WriteItem = {
   category: string;
   is_normal: boolean;
@@ -512,7 +701,7 @@ export async function submitDailyForm(params: {
   employeeCode: string;
   dateISO: string;
   workStartTime?: string | null; // "08:30" 形式
-  workEndTime?: string | null;   // "17:15" 形式
+  workEndTime?: string | null; // "17:15" 形式
   items: WriteItem[];
 }): Promise<void> {
   if (USE_API) {
@@ -521,7 +710,7 @@ export async function submitDailyForm(params: {
       date: params.dateISO,
       work_start_time: params.workStartTime ?? null,
       work_end_time: params.workEndTime ?? null,
-      items: params.items.map(it => ({
+      items: params.items.map((it) => ({
         category: it.category,
         is_normal: !!it.is_normal,
         value: it.value == null ? null : String(it.value),
@@ -540,7 +729,25 @@ export async function submitDailyForm(params: {
     return;
   }
 
-  // --- モック保存（既存ローカルストレージの実装があるならそれを呼ぶ）
-  // ここは最小。既存のmock保存ロジックがあれば差し替え。
-  console.warn("USE_API=0 のため、submitDailyForm はモック保存にフォールバックします");
+  // モック/ローカル時は saveDailyCheck を使う想定なので何もしない
+  console.warn("USE_API=0 のため、submitDailyForm は無効（saveDailyCheck を利用してください）");
+}
+
+/* --------------------------------
+ * 営業所PIN：ダッシュボードの管理者認証で使用
+ * -------------------------------- */
+export async function getBranchExpectedPin(branchCode: string): Promise<string | null> {
+  const b = mockBranches.find((x) => x.code === branchCode) as
+    | { managementPin?: string | number; password?: string | number }
+    | undefined;
+
+  if (!b) return null;
+
+  // managementPin があれば優先、なければ password を使う
+  const pinRaw = b.managementPin ?? b.password;
+  if (pinRaw == null) return null;
+
+  // 数値でも文字列でも受け取り、4桁ゼロパディングして返す
+  const s = String(pinRaw);
+  return /^\d+$/.test(s) ? s.padStart(4, "0") : s;
 }
