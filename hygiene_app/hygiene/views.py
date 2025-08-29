@@ -165,85 +165,80 @@ class DashboardView(APIView):
 # Write API (フォーム保存)
 # =========================
 
+from django.utils.dateparse import parse_date
+from django.db import transaction
+from rest_framework import permissions, status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from .models import Employee, Record, RecordItem
+
 class SubmitRecordView(APIView):
-    """
-    POST /api/records/submit
-    {
-      "employee_code": "000001",
-      "date": "2025-08-25",
-      "work_start_time": "08:30",   // 省略可 or null
-      "work_end_time": "17:15",     // 省略可 or null
-      "items": [
-        {"category":"temperature","is_normal":true,"value":36.6},
-        {"category":"proper_uniform","is_normal":false,"comment":"エプロン忘れ"}
-      ],
-      "supervisor_confirmed": true  // 任意
-    }
-    """
-    permission_classes = [permissions.AllowAny]  # 本番は認証に切り替え
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         data = request.data or {}
+        # ★ログ（docker compose logs -f backend で見える）
+        print("[SubmitRecordView] payload =", data)
 
         employee_code = data.get("employee_code")
         date_str = data.get("date")
         if not employee_code or not date_str:
-            return Response(
-                {"detail": "employee_code と date は必須です。"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "employee_code と date は必須です。"},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         d = parse_date(date_str)
         if not d:
-            return Response({"detail": "date は YYYY-MM-DD 形式で指定してください。"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "date は YYYY-MM-DD 形式で指定してください。"}, status=400)
 
         try:
             emp = Employee.objects.get(code=employee_code)
         except Employee.DoesNotExist:
-            return Response({"detail": "employee not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "employee not found"}, status=400)
 
         work_start_time = data.get("work_start_time")  # "HH:MM" or null
-        work_end_time = data.get("work_end_time")      # "HH:MM" or null
+        work_end_time   = data.get("work_end_time")    # "HH:MM" or null
         items = data.get("items") or []
-        supervisor_confirmed = data.get("supervisor_confirmed", None)
 
         with transaction.atomic():
             rec, _ = Record.objects.get_or_create(date=d, employee=emp)
-
-            # 時刻は "HH:MM" 文字列なら parse_time で変換（None 指定も可）
+            # None のときは上書きしない（null 明示したければ null を送る）
             if work_start_time is not None:
-                rec.work_start_time = parse_time(work_start_time) if isinstance(work_start_time, str) else work_start_time
+                rec.work_start_time = work_start_time
             if work_end_time is not None:
-                rec.work_end_time = parse_time(work_end_time) if isinstance(work_end_time, str) else work_end_time
+                rec.work_end_time = work_end_time
             rec.save()
 
-            # 明細 upsert
             for it in items:
-                cat = it.get("category")
+                cat = (it.get("category") or "").strip()
                 if not cat:
                     continue
+                # value は数値に寄せる（空文字や None は None）
+                raw_val = it.get("value", None)
+                if raw_val in ("", None):
+                    val = None
+                else:
+                    try:
+                        val = float(raw_val)
+                    except Exception:
+                        # 数値化できない場合はコメントだけを使う前提なので value=None
+                        val = None
 
                 defaults = {
                     "is_normal": bool(it.get("is_normal")),
-                    "value": None,
-                    "comment": (it.get("comment") or ""),
+                    "value": val,
+                    "comment": (it.get("comment") or "").strip(),
                 }
-                val = it.get("value", None)
-                if val not in ("", None):
-                    try:
-                        defaults["value"] = float(val)
-                    except (TypeError, ValueError):
-                        defaults["value"] = None
-
                 RecordItem.objects.update_or_create(
                     record=rec, category=cat, defaults=defaults
                 )
 
+        return Response({"status": "ok"})
+
             # 責任者確認（任意）
-            if supervisor_confirmed is not None:
-                if supervisor_confirmed:
-                    SupervisorConfirmation.objects.get_or_create(record=rec)
-                else:
-                    SupervisorConfirmation.objects.filter(record=rec).delete()
+        if supervisor_confirmed is not None:
+            if supervisor_confirmed:
+                SupervisorConfirmation.objects.get_or_create(record=rec)
+            else:
+                SupervisorConfirmation.objects.filter(record=rec).delete()
 
         return Response({"ok": True}, status=status.HTTP_200_OK)

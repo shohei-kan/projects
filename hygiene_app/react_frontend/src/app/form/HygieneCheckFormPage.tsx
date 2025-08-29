@@ -35,9 +35,8 @@ import {
 } from "lucide-react";
 
 // Adapter（モック→APIの差し替えポイント）
-import { getEmployeesByBranch, getTodayRecordWithItems} from "@/lib/hygieneAdapter";
+import { getEmployeesByBranch, getTodayRecordWithItems,submitDailyForm} from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
-import { saveDailyCheck } from "@/lib/saveDailyCheck";
 
 /* ---------------- Types ---------------- */
 interface CheckItem {
@@ -391,84 +390,112 @@ export default function DailyHygieneCheckForm() {
   };
 
   /* ---------- 保存/送信（モックのまま） ---------- */
-    const handleStep1Save = async () => {
-    // バリデーションは既存のまま
-    const lists =
-      workType === "work"
-        ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
-        : [healthChecks];
-    const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
-    if (requireComment) {
-      alert("異常が報告されている項目について、詳細コメントが必要です。");
-      return;
-    }
-    if (!basicInfo.employee || !basicInfo.supervisor) {
-      alert("従業員名と確認者名を入力してください。");
-      return;
-    }
+const handleStep1Save = async () => {
+  // 既存のバリデーション維持
+  const lists =
+    workType === "work"
+      ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
+      : [healthChecks];
 
-    try {
-      setSaving(true);
-      setErrorMsg(null);
-      const res = await saveDailyCheck({
-        employeeCode: basicInfo.employee,
-        dateISO: basicInfo.date,
-        step: 1,
-        temperature: parseFloat(basicInfo.temperature),
-        items: collectStep1Items(),
-        comment: buildSummaryComment(false),
-      });
-      setSaving(false);
-      if (!res.ok) {
-        setErrorMsg(res.message);
-        alert("保存に失敗しました: " + res.message);
-        return;
-      }
-      alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
-      navigate("/dashboard");
-    } catch (err) {
-      setSaving(false);
-      alert("保存に失敗しました: " + (err as Error).message);
-    }
+  const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
+  if (requireComment) {
+    alert("異常が報告されている項目について、詳細コメントが必要です。");
+    return;
+  }
+  if (!basicInfo.employee || !basicInfo.supervisor) {
+    alert("従業員名と確認者名を入力してください。");
+    return;
+  }
+
+  // 送信用アイテムを組み立て（collectStep1Items は使わずAPI仕様に合わせる）
+  const items: { category: string; is_normal: boolean; value?: number | string | null; comment?: string | null }[] = [
+    { category: "temperature", is_normal: true, value: Number(basicInfo.temperature) },
+  ];
+  const pushFrom = (arr: CheckItem[]) => {
+    arr.forEach((c) =>
+      items.push({
+        category: c.id,
+        is_normal: c.checked,
+        comment: c.comment || null,
+      })
+    );
   };
+  pushFrom(healthChecks);
+  if (workType === "work") {
+    pushFrom(respiratoryChecks);
+    pushFrom(handHygieneChecks);
+    pushFrom(uniformHygieneChecks);
+  }
+
+  const payload = {
+    employeeCode: basicInfo.employee,
+    dateISO: basicInfo.date,
+    workStartTime: workType === "work" ? "08:30" : null, // 必要に応じてUI化
+    workEndTime: null,
+    items,
+  } as const;
+
+  try {
+    setSaving(true);
+    setErrorMsg(null);
+    console.info("[form->submit] step1 payload", payload);
+    await submitDailyForm(payload);
+    console.info("[form->submit] step1 OK");
+    alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
+    navigate("/dashboard");
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error("[form->submit] step1 NG", err);
+    setErrorMsg(msg);
+    alert("保存に失敗しました: " + msg);
+  } finally {
+    setSaving(false);
+  }
+};
 
 
 // 既存の handleFinalSubmit を丸ごと置き換え
-  const handleFinalSubmit = async () => {
-    const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
-    if (requireComment) {
-      alert("異常が報告されている項目について、詳細コメントが必要です。");
-      return;
-    }
-    if (!basicInfo.employee) {
-      alert("従業員を選択してください。");
-      return;
-    }
+const handleFinalSubmit = async () => {
+  const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
+  if (requireComment) {
+    alert("異常が報告されている項目について、詳細コメントが必要です。");
+    return;
+  }
+  if (!basicInfo.employee) {
+    alert("従業員を選択してください。");
+    return;
+  }
 
-    try {
-      setSaving(true);
-      setErrorMsg(null);
-      const res = await saveDailyCheck({
-        employeeCode: basicInfo.employee,
-        dateISO: basicInfo.date,
-        step: 2,
-        temperature: parseFloat(basicInfo.temperature),
-        items: collectStep2Items(),
-        comment: buildSummaryComment(true),
-      });
-      setSaving(false);
-      if (!res.ok) {
-        setErrorMsg(res.message);
-        alert("保存に失敗しました: " + res.message);
-        return;
-      }
-      alert("退勤チェックを保存しました！");
-      navigate("/dashboard");
-    } catch (err) {
-      setSaving(false);
-      alert("保存に失敗しました: " + (err as Error).message);
-    }
-  };
+  // 退勤で送るペイロード（必要なら時刻はUIから変更してね）
+  const payload = {
+    employeeCode: basicInfo.employee,
+    dateISO: basicInfo.date,
+    workStartTime: null,
+    workEndTime: "17:30",
+    items: postWorkChecks.map((c) => ({
+      category: c.id,
+      is_normal: c.checked,
+      comment: c.comment || null,
+    })),
+  } as const;
+
+  try {
+    setSaving(true);
+    setErrorMsg(null);
+    console.info("[form->submit] step2 payload", payload);
+    await submitDailyForm(payload);
+    console.info("[form->submit] step2 OK");
+    alert("退勤チェックを保存しました！");
+    navigate("/dashboard");
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error("[form->submit] step2 NG", err);
+    setErrorMsg(msg);
+    alert("保存に失敗しました: " + msg);
+  } finally {
+    setSaving(false);
+  }
+};
 
   /* ---------------- Render ---------------- */
   return (

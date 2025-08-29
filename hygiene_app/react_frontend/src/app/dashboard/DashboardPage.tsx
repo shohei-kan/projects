@@ -27,6 +27,7 @@ import {
   type DashboardStaffRow,
 } from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
+const today = new Date(TODAY_STR);
 
 /* ---------- utils ---------- */
 const formatDate = (date: Date) => {
