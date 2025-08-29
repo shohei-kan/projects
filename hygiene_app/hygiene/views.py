@@ -128,7 +128,7 @@ class SubmitRecordView(APIView):
 
     def post(self, request):
         data = request.data or {}
-        print("[SubmitRecordView] payload =", data)  # docker compose logs -f backend で確認可
+        print("[SubmitRecordView] payload =", data)
 
         employee_code = data.get("employee_code")
         date_str = data.get("date")
@@ -146,34 +146,51 @@ class SubmitRecordView(APIView):
         except Employee.DoesNotExist:
             return Response({"detail": "employee not found"}, status=status.HTTP_400_BAD_REQUEST)
 
-        work_start_time = data.get("work_start_time")  # "HH:MM" or null
-        work_end_time   = data.get("work_end_time")    # "HH:MM" or null
+        # 文字列 or null をそのまま TimeField に渡してOK（モデル側で変換される）
+        work_start_time = data.get("work_start_time")   # "HH:MM" or null or 未指定(None)
+        work_end_time   = data.get("work_end_time")     # "HH:MM" or null or 未指定(None)
+
+        # supervisor（確認者）
+        supervisor_code = data.get("supervisor_code")
+        supervisor = None
+        if supervisor_code:
+            supervisor = Employee.objects.filter(code=supervisor_code).first()
+            if supervisor is None:
+                return Response({"detail": "supervisor not found"}, status=status.HTTP_400_BAD_REQUEST)
+
         items = data.get("items") or []
-        supervisor_code = data.get("supervisor_code") or None
+
+        sending_start = work_start_time is not None   # 明示的に key があり、null でない
+        sending_end   = work_end_time   is not None
 
         with transaction.atomic():
             rec, _ = Record.objects.get_or_create(date=d, employee=emp)
 
-            # None のときは上書きしない（null を送ってきたら null にする）
-            if work_start_time is not None:
+            # ★サーバ側ガード：出勤未登録で退勤のみはNG
+            #   - 既存レコードに start が無い
+            #   - リクエストでも start を送っていない
+            #   - なのに end だけ送ってきた
+            if sending_end and not sending_start and rec.work_start_time is None:
+                return Response(
+                    {"detail": "出勤が未登録のため、退勤は登録できません。先に出勤を登録してください。"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 時刻・確認者の反映（None の場合は「上書きしない」運用）
+            if sending_start:
                 rec.work_start_time = work_start_time
-            if work_end_time is not None:
+            if sending_end:
                 rec.work_end_time = work_end_time
-
-            # ★ 正しいフィールド名（models.Record.supervisor_selected）に保存
-            if supervisor_code:
-                sup = Employee.objects.filter(code=supervisor_code).first()
-                if not sup:
-                    return Response({"detail": "supervisor not found"}, status=status.HTTP_400_BAD_REQUEST)
-                rec.supervisor_selected = sup
-
+            if supervisor is not None:
+                rec.supervisor_selected = supervisor
             rec.save()
 
-            # 明細 upsert（カテゴリ一意）
+            # 明細
             for it in items:
                 cat = (it.get("category") or "").strip()
                 if not cat:
                     continue
+
                 raw_val = it.get("value", None)
                 if raw_val in ("", None):
                     val = None
@@ -181,7 +198,7 @@ class SubmitRecordView(APIView):
                     try:
                         val = float(raw_val)
                     except Exception:
-                        val = None  # 数値化できなければ value は None に寄せる
+                        val = None  # 数値化できない場合は value は None（コメント優先）
 
                 defaults = {
                     "is_normal": bool(it.get("is_normal")),
@@ -191,5 +208,13 @@ class SubmitRecordView(APIView):
                 RecordItem.objects.update_or_create(
                     record=rec, category=cat, defaults=defaults
                 )
+
+            # supervisor_confirmed（任意で使う場合）
+            supervisor_confirmed = data.get("supervisor_confirmed", None)
+            if supervisor_confirmed is not None:
+                if supervisor_confirmed:
+                    SupervisorConfirmation.objects.get_or_create(record=rec)
+                else:
+                    SupervisorConfirmation.objects.filter(record=rec).delete()
 
         return Response({"status": "ok"}, status=status.HTTP_200_OK)

@@ -1,7 +1,7 @@
 // src/app/form/HygieneCheckFormPage.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 // UI
@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 
 // Adapter（モック→APIの差し替えポイント）
-import { getEmployeesByBranch, getTodayRecordWithItems,submitDailyForm} from "@/lib/hygieneAdapter";
+import { getEmployeesByBranch, getTodayRecordWithItems, submitDailyForm } from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
 
 /* ---------------- Types ---------------- */
@@ -226,6 +226,9 @@ export default function DailyHygieneCheckForm() {
     },
   ]);
 
+  // 出勤済みかどうか
+  const [isCheckedIn, setIsCheckedIn] = useState(false);
+
   /* ---------- 既存レコードの反映（アダプター経由） ---------- */
   // RecordItem を既存 state に反映する小ユーティリティ
   const patchSection = (
@@ -265,27 +268,26 @@ export default function DailyHygieneCheckForm() {
         await getTodayRecordWithItems(code, basicInfo.date);
       if (aborted) return;
 
-      // ★ 確認者コードが返ってきたら、未選択のときだけ自動セット
+      const checkedIn = !!record?.work_start_time;
+      setIsCheckedIn(checkedIn);
+
+      // 確認者コードが返ってきたら、未選択のときだけ自動セット
       if ((supervisorCode ?? "") !== "") {
-        setBasicInfo(prev =>
-          prev.supervisor ? prev : { ...prev, supervisor: supervisorCode! }
-        );
+        setBasicInfo((prev) => (prev.supervisor ? prev : { ...prev, supervisor: supervisorCode! }));
       }
 
-
-      // レコードがあれば「出勤日」に寄せる（※手動切替は尊重）
-      if (record?.work_start_time) {
-        setWorkType((prev) => prev); // 出勤記録があるなら off にはしない（手動で変えたときは維持）
+      // 休日は退勤ステップに行けない
+      if (workType === "off" && currentStep === 2) {
+        alert("休日は退勤チェックができません。出勤日に切り替えるか、出勤時チェックのみ記録してください。");
+        setCurrentStep(1);
+        return;
       }
 
-      // 休日選択中は退勤チェックのブロックは無効（タブも非表示にするため）
-      if (workType === "work") {
-        const isCheckedIn = !!record?.work_start_time;
-        if (currentStep === 2 && !isCheckedIn) {
-          alert("出勤登録がされていません。先に出勤チェックを完了してください。");
-          navigate("/form");
-          return;
-        }
+      // 出勤日でも未出勤なら退勤ステップに行けない
+      if (workType === "work" && currentStep === 2 && !checkedIn) {
+        alert("出勤登録がされていません。先に出勤チェックを完了してください。");
+        setCurrentStep(1);
+        return;
       }
 
       // 体温
@@ -334,7 +336,7 @@ export default function DailyHygieneCheckForm() {
       aborted = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [basicInfo.employee, employeeCodeParam, basicInfo.date]);
+  }, [basicInfo.employee, employeeCodeParam, basicInfo.date, workType, currentStep]);
 
   /* ---------- ヘルパ ---------- */
   const updateCheckItem = (
@@ -357,7 +359,7 @@ export default function DailyHygieneCheckForm() {
 
   const findEmpName = (code: string) => employeesInOffice.find((e) => e.code === code)?.name ?? code;
 
-    /* ---------- 送信ヘルパ（items整形・コメント要約） ---------- */
+  /* ---------- 送信ヘルパ（items整形・コメント要約） ---------- */
   const collectStep1Items = () => {
     const toItem = (c: CheckItem) => ({
       category: c.id,
@@ -387,7 +389,7 @@ export default function DailyHygieneCheckForm() {
     const temp = parseFloat(basicInfo.temperature);
     if (!Number.isNaN(temp) && temp >= 37.5) parts.push(`体温${basicInfo.temperature}℃`);
     const pushFrom = (arr: CheckItem[]) =>
-      arr.filter(i => !i.checked && i.comment.trim()).forEach(i => parts.push(`${i.label}: ${i.comment.trim()}`));
+      arr.filter((i) => !i.checked && i.comment.trim()).forEach((i) => parts.push(`${i.label}: ${i.comment.trim()}`));
     pushFrom(healthChecks);
     if (workType === "work") {
       pushFrom(respiratoryChecks);
@@ -398,115 +400,124 @@ export default function DailyHygieneCheckForm() {
     return parts.length ? parts.join(" / ") : undefined;
   };
 
-  /* ---------- 保存/送信（モックのまま） ---------- */
-const handleStep1Save = async () => {
-  // 既存のバリデーション維持
-  const lists =
-    workType === "work"
-      ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
-      : [healthChecks];
+  /* ---------- 保存/送信 ---------- */
+  const handleStep1Save = async () => {
+    // バリデーション
+    const lists =
+      workType === "work"
+        ? [healthChecks, respiratoryChecks, handHygieneChecks, uniformHygieneChecks]
+        : [healthChecks];
 
-  const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
-  if (requireComment) {
-    alert("異常が報告されている項目について、詳細コメントが必要です。");
-    return;
-  }
-  if (!basicInfo.employee || !basicInfo.supervisor) {
-    alert("従業員名と確認者名を入力してください。");
-    return;
-  }
+    const requireComment = lists.flat().some((i) => !i.checked && i.comment.trim() === "");
+    if (requireComment) {
+      alert("異常が報告されている項目について、詳細コメントが必要です。");
+      return;
+    }
+    if (!basicInfo.employee || !basicInfo.supervisor) {
+      alert("従業員名と確認者名を入力してください。");
+      return;
+    }
 
-  // 送信用アイテムを組み立て（collectStep1Items は使わずAPI仕様に合わせる）
-  const items: { category: string; is_normal: boolean; value?: number | string | null; comment?: string | null }[] = [
-    { category: "temperature", is_normal: true, value: Number(basicInfo.temperature) },
-  ];
-  const pushFrom = (arr: CheckItem[]) => {
-    arr.forEach((c) =>
-      items.push({
+    // 送信用アイテム（API仕様に合わせて comment を送る）
+    const items: { category: string; is_normal: boolean; value?: number | string | null; comment?: string | null }[] = [
+      { category: "temperature", is_normal: true, value: Number(basicInfo.temperature) },
+    ];
+    const pushFrom = (arr: CheckItem[]) => {
+      arr.forEach((c) =>
+        items.push({
+          category: c.id,
+          is_normal: c.checked,
+          comment: c.comment || null,
+        })
+      );
+    };
+    pushFrom(healthChecks);
+    if (workType === "work") {
+      pushFrom(respiratoryChecks);
+      pushFrom(handHygieneChecks);
+      pushFrom(uniformHygieneChecks);
+    }
+
+    const payload = {
+      employeeCode: basicInfo.employee,
+      dateISO: basicInfo.date,
+      workStartTime: workType === "work" ? "08:30" : null, // 必要に応じてUI化
+      workEndTime: null,
+      items,
+      supervisorCode: basicInfo.supervisor || null,
+    } as const;
+
+    try {
+      setSaving(true);
+      setErrorMsg(null);
+      console.info("[form->submit] step1 payload", payload);
+      await submitDailyForm(payload);
+      console.info("[form->submit] step1 OK");
+      alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
+      navigate("/dashboard");
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error("[form->submit] step1 NG", err);
+      setErrorMsg(msg);
+      alert("保存に失敗しました: " + msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleFinalSubmit = async () => {
+    const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
+    if (requireComment) {
+      alert("異常が報告されている項目について、詳細コメントが必要です。");
+      return;
+    }
+    if (!basicInfo.employee) {
+      alert("従業員を選択してください。");
+      return;
+    }
+    // 休日は退勤登録不可
+    if (workType === "off") {
+      alert("休日は退勤チェックを登録できません。");
+      return;
+    }
+    // 未出勤は退勤登録不可
+    if (!isCheckedIn) {
+      alert("出勤チェックが完了していません。先に出勤チェックを保存してください。");
+      setCurrentStep(1);
+      return;
+    }
+
+    // 退勤で送るペイロード（必要なら時刻はUIから変更してね）
+    const payload = {
+      employeeCode: basicInfo.employee,
+      dateISO: basicInfo.date,
+      workStartTime: null,
+      workEndTime: "17:30",
+      items: postWorkChecks.map((c) => ({
         category: c.id,
         is_normal: c.checked,
         comment: c.comment || null,
-      })
-    );
+      })),
+      supervisorCode: basicInfo.supervisor || null,
+    } as const;
+
+    try {
+      setSaving(true);
+      setErrorMsg(null);
+      console.info("[form->submit] step2 payload", payload);
+      await submitDailyForm(payload);
+      console.info("[form->submit] step2 OK");
+      alert("退勤チェックを保存しました！");
+      navigate("/dashboard");
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error("[form->submit] step2 NG", err);
+      setErrorMsg(msg);
+      alert("保存に失敗しました: " + msg);
+    } finally {
+      setSaving(false);
+    }
   };
-  pushFrom(healthChecks);
-  if (workType === "work") {
-    pushFrom(respiratoryChecks);
-    pushFrom(handHygieneChecks);
-    pushFrom(uniformHygieneChecks);
-  }
-
-  const payload = {
-    employeeCode: basicInfo.employee,
-    dateISO: basicInfo.date,
-    workStartTime: workType === "work" ? "08:30" : null, // 必要に応じてUI化
-    workEndTime: null,
-    items,
-    supervisorCode: basicInfo.supervisor || null,
-  } as const;
-
-  try {
-    setSaving(true);
-    setErrorMsg(null);
-    console.info("[form->submit] step1 payload", payload);
-    await submitDailyForm(payload);
-    console.info("[form->submit] step1 OK");
-    alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
-    navigate("/dashboard");
-  } catch (err) {
-    const msg = (err as Error).message;
-    console.error("[form->submit] step1 NG", err);
-    setErrorMsg(msg);
-    alert("保存に失敗しました: " + msg);
-  } finally {
-    setSaving(false);
-  }
-};
-
-
-// 既存の handleFinalSubmit を丸ごと置き換え
-const handleFinalSubmit = async () => {
-  const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
-  if (requireComment) {
-    alert("異常が報告されている項目について、詳細コメントが必要です。");
-    return;
-  }
-  if (!basicInfo.employee) {
-    alert("従業員を選択してください。");
-    return;
-  }
-
-  // 退勤で送るペイロード（必要なら時刻はUIから変更してね）
-  const payload = {
-    employeeCode: basicInfo.employee,
-    dateISO: basicInfo.date,
-    workStartTime: null,
-    workEndTime: "17:30",
-    items: postWorkChecks.map((c) => ({
-      category: c.id,
-      is_normal: c.checked,
-      comment: c.comment || null,
-    })),
-    supervisorCode: basicInfo.supervisor || null,
-  } as const;
-
-  try {
-    setSaving(true);
-    setErrorMsg(null);
-    console.info("[form->submit] step2 payload", payload);
-    await submitDailyForm(payload);
-    console.info("[form->submit] step2 OK");
-    alert("退勤チェックを保存しました！");
-    navigate("/dashboard");
-  } catch (err) {
-    const msg = (err as Error).message;
-    console.error("[form->submit] step2 NG", err);
-    setErrorMsg(msg);
-    alert("保存に失敗しました: " + msg);
-  } finally {
-    setSaving(false);
-  }
-};
 
   /* ---------------- Render ---------------- */
   return (
@@ -557,31 +568,6 @@ const handleFinalSubmit = async () => {
             {/* ヘッダー */}
             <div className="mb-6">
               <h1 className="text-2xl font-medium text-gray-900 mb-4">健康管理チェックフォーム</h1>
-
-              {/* 勤務区分トグル（出勤日 / 休み）
-              <div className="mb-4 flex items-center justify-center gap-3">
-                <span className="text-sm text-gray-700">勤務区分</span>
-                <Select
-                  value={workType}
-                  onValueChange={(v) => setWorkType(v as WorkType)}
-                >
-                  <SelectTrigger className="w-40 text-sm rounded-xl px-3 py-2 border-gray-300 bg-white">
-                    <SelectValue placeholder="勤務区分" />
-                  </SelectTrigger>
-                  <SelectContent
-                    position="popper"
-                    sideOffset={6}
-                    className="z-[100] w-[160px] rounded-xl border border-gray-200 bg-white shadow-lg"
-                  >
-                    <SelectItem value="work" className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium">
-                      出勤日
-                    </SelectItem>
-                    <SelectItem value="off" className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium">
-                      休み
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div> */}
 
               {/* ステップ切替（出勤日のみ表示） */}
               {workType === "work" && (
@@ -696,16 +682,12 @@ const handleFinalSubmit = async () => {
                         <div className="space-y-1">
                           <span className="text-gray-900 text-sm">確認者名</span>
                           <Select
-                            value={basicInfo.supervisor || ""}               // ← 空は "" を渡す
-                            onValueChange={(code) =>
-                              setBasicInfo({ ...basicInfo, supervisor: code })
-                            }
+                            value={basicInfo.supervisor || ""}
+                            onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
                           >
                             <SelectTrigger
                               className={`text-sm rounded-xl px-3 py-2 ${
-                                !basicInfo.supervisor
-                                  ? "border-amber-300 bg-amber-50"
-                                  : "border-gray-300 bg-white"
+                                !basicInfo.supervisor ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
                               }`}
                             >
                               <SelectValue placeholder="確認者を選択" />
@@ -718,7 +700,7 @@ const handleFinalSubmit = async () => {
                               {employeesInOffice.map((e) => (
                                 <SelectItem
                                   key={e.code}
-                                  value={e.code}                           // ← value は“コード”
+                                  value={e.code}
                                   className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
                                 >
                                   {e.name}
@@ -754,129 +736,129 @@ const handleFinalSubmit = async () => {
                   </Card>
                 </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* 体温・体調（共通） */}
-                <Card className={`border-gray-200 ${healthChecks.some((i) => !i.checked) ? "ring-2 ring-amber-200" : ""}`}>
-                  <CardHeader className="pb-3 bg-emerald-50 border-emerald-200">
-                    <CardTitle className="text-emerald-800 flex items-center gap-2 text-sm">
-                      <Heart className="w-4 h-4 text-emerald-600" />
-                      体温・体調チェック
-                      {!healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
-                        <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />
-                      )}
-                      {healthChecks.some((i) => !i.checked) &&
-                        healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
-                          <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* 体温・体調（共通） */}
+                  <Card className={`border-gray-200 ${healthChecks.some((i) => !i.checked) ? "ring-2 ring-amber-200" : ""}`}>
+                    <CardHeader className="pb-3 bg-emerald-50 border-emerald-200">
+                      <CardTitle className="text-emerald-800 flex items-center gap-2 text-sm">
+                        <Heart className="w-4 h-4 text-emerald-600" />
+                        体温・体調チェック
+                        {!healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
+                          <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />
                         )}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4 pt-4 pb-4">
-                    <div className="space-y-1">
-                      <span className="text-gray-900 text-sm">体温（℃）</span>
-                      <div className="flex items-center gap-3">
-                        <Input
-                          id="temperature"
-                          type="number"
-                          step="0.1"
-                          min="35.0"
-                          max="42.0"
-                          value={basicInfo.temperature}
-                          onChange={(e) => setBasicInfo({ ...basicInfo, temperature: e.target.value })}
-                          className={`w-24 text-sm rounded-xl ${
-                            parseFloat(basicInfo.temperature) >= 37.5 ? "border-red-300 bg-red-50" : "border-gray-300"
-                          }`}
-                        />
-                        {parseFloat(basicInfo.temperature) >= 37.5 && (
-                          <Alert className="border-red-200 bg-red-50 flex-1 py-2 px-3">
-                            <AlertTriangle className="h-3 w-3 text-red-600" />
-                            <AlertDescription className="text-red-800 text-xs">
-                              発熱確認。責任者に報告し、作業中止してください。
-                            </AlertDescription>
-                          </Alert>
-                        )}
+                        {healthChecks.some((i) => !i.checked) &&
+                          healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
+                            <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />
+                          )}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4 pt-4 pb-4">
+                      <div className="space-y-1">
+                        <span className="text-gray-900 text-sm">体温（℃）</span>
+                        <div className="flex items-center gap-3">
+                          <Input
+                            id="temperature"
+                            type="number"
+                            step="0.1"
+                            min="35.0"
+                            max="42.0"
+                            value={basicInfo.temperature}
+                            onChange={(e) => setBasicInfo({ ...basicInfo, temperature: e.target.value })}
+                            className={`w-24 text-sm rounded-xl ${
+                              parseFloat(basicInfo.temperature) >= 37.5 ? "border-red-300 bg-red-50" : "border-gray-300"
+                            }`}
+                          />
+                          {parseFloat(basicInfo.temperature) >= 37.5 && (
+                            <Alert className="border-red-200 bg-red-50 flex-1 py-2 px-3">
+                              <AlertTriangle className="h-3 w-3 text-red-600" />
+                              <AlertDescription className="text-red-800 text-xs">
+                                発熱確認。責任者に報告し、作業中止してください。
+                              </AlertDescription>
+                            </Alert>
+                          )}
+                        </div>
                       </div>
-                    </div>
 
-                    <Separator className="bg-gray-200" />
+                      <Separator className="bg-gray-200" />
 
-                    <div className="space-y-3">
-                      {healthChecks.map((item) => (
-                        <div key={item.id} className="space-y-2">
-                          <div className="flex items-start space-x-2">
-                            <Checkbox
-                              id={item.id}
-                              checked={item.checked}
-                              onCheckedChange={(checked) =>
-                                updateCheckItem(healthChecks, setHealthChecks, item.id, checked as boolean)
-                              }
-                              className={`border-gray-300 mt-0.5 ${
-                                item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
-                              }`}
-                            />
-                            <div className="flex-1">
-                              <span className={`leading-relaxed text-sm ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
-                                {item.label}
-                              </span>
-                              {!item.checked && item.guidance && (
-                                <div className="mt-2">
-                                  <Alert className="border-amber-200 bg-amber-50 py-2 px-3">
-                                    <AlertDescription className="text-amber-800 text-xs leading-tight">
-                                      {item.guidance}
-                                    </AlertDescription>
-                                  </Alert>
-                                </div>
-                              )}
+                      <div className="space-y-3">
+                        {healthChecks.map((item) => (
+                          <div key={item.id} className="space-y-2">
+                            <div className="flex items-start space-x-2">
+                              <Checkbox
+                                id={item.id}
+                                checked={item.checked}
+                                onCheckedChange={(checked) =>
+                                  updateCheckItem(healthChecks, setHealthChecks, item.id, checked as boolean)
+                                }
+                                className={`border-gray-300 mt-0.5 ${
+                                  item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
+                                }`}
+                              />
+                              <div className="flex-1">
+                                <span className={`leading-relaxed text-sm ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
+                                  {item.label}
+                                </span>
+                                {!item.checked && item.guidance && (
+                                  <div className="mt-2">
+                                    <Alert className="border-amber-200 bg-amber-50 py-2 px-3">
+                                      <AlertDescription className="text-amber-800 text-xs leading-tight">
+                                        {item.guidance}
+                                      </AlertDescription>
+                                    </Alert>
+                                  </div>
+                                )}
+                              </div>
                             </div>
+
+                            {item.requiresComment && (
+                              <div className="ml-5 space-y-1">
+                                <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
+                                <Textarea
+                                  id={`${item.id}-comment`}
+                                  placeholder="症状や状況の詳細を記入してください"
+                                  value={item.comment}
+                                  onChange={(e) =>
+                                    updateCheckItem(healthChecks, setHealthChecks, item.id, item.checked, e.target.value)
+                                  }
+                                  className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
+                                  rows={2}
+                                />
+                              </div>
+                            )}
                           </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
 
-            {item.requiresComment && (
-              <div className="ml-5 space-y-1">
-                <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
-                <Textarea
-                  id={`${item.id}-comment`}
-                  placeholder="症状や状況の詳細を記入してください"
-                  value={item.comment}
-                  onChange={(e) =>
-                    updateCheckItem(healthChecks, setHealthChecks, item.id, item.checked, e.target.value)
-                  }
-                  className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
-                  rows={2}
-                />
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </CardContent>
-  </Card>
-
-  {/* 以下は出勤日のみ表示（休みでは非表示） */}
-  {workType === "work" && (
-    <>
-      <CompactCheckboxSection
-        title="呼吸器症状"
-        items={respiratoryChecks}
-        setItems={setRespiratoryChecks}
-        headerColor="blue"
-        icon={Wind}
-      />
-      <CompactCheckboxSection
-        title="手指・爪の状態"
-        items={handHygieneChecks}
-        setItems={setHandHygieneChecks}
-        headerColor="orange"
-        icon={Hand}
-      />
-      <CompactCheckboxSection
-        title="服装チェック"
-        items={uniformHygieneChecks}
-        setItems={setUniformHygieneChecks}
-        headerColor="purple"
-        icon={Shirt}
-      />
-    </>
-  )}
-</div>
+                  {/* 以下は出勤日のみ表示（休みでは非表示） */}
+                  {workType === "work" && (
+                    <>
+                      <CompactCheckboxSection
+                        title="呼吸器症状"
+                        items={respiratoryChecks}
+                        setItems={setRespiratoryChecks}
+                        headerColor="blue"
+                        icon={Wind}
+                      />
+                      <CompactCheckboxSection
+                        title="手指・爪の状態"
+                        items={handHygieneChecks}
+                        setItems={setHandHygieneChecks}
+                        headerColor="orange"
+                        icon={Hand}
+                      />
+                      <CompactCheckboxSection
+                        title="服装チェック"
+                        items={uniformHygieneChecks}
+                        setItems={setUniformHygieneChecks}
+                        headerColor="purple"
+                        icon={Shirt}
+                      />
+                    </>
+                  )}
+                </div>
 
                 {/* 保存 */}
                 <div className="flex justify-center mt-8 pb-8">
@@ -914,7 +896,12 @@ const handleFinalSubmit = async () => {
                     <ChevronLeft className="w-5 h-5" />
                     出勤時チェックへ
                   </Button>
-                  <Button disabled={saving} onClick={handleFinalSubmit} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl">
+                  <Button
+                    disabled={saving || !isCheckedIn}
+                    onClick={handleFinalSubmit}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
+                    title={!isCheckedIn ? "出勤チェックを完了すると有効になります" : undefined}
+                  >
                     <Save className="w-5 h-5" />
                     登録
                   </Button>
