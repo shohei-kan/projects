@@ -1,7 +1,9 @@
+# hygiene/serializers.py
 from rest_framework import serializers
 from .models import Office, Employee, Record, RecordItem, SupervisorConfirmation
 
 
+# --- write 用（SubmitRecordView で使用） ---
 class RecordItemWriteSerializer(serializers.Serializer):
     category = serializers.CharField(max_length=100)
     is_normal = serializers.BooleanField()
@@ -13,10 +15,12 @@ class RecordWriteSerializer(serializers.Serializer):
     date = serializers.DateField()
     work_start_time = serializers.TimeField(required=False, allow_null=True)
     work_end_time   = serializers.TimeField(required=False, allow_null=True)
+    supervisor_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     supervisor_confirmed = serializers.BooleanField(required=False)
     items = RecordItemWriteSerializer(many=True, required=False)
 
 
+# --- read 用 ---
 class OfficeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Office
@@ -27,12 +31,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Employee
-        fields = ("id","code","name","office","office_name")
+        fields = ("id", "code", "name", "office", "office_name")
 
 class RecordItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = RecordItem
-        fields = ("id","category","is_normal","value","comment")
+        fields = ("id", "category", "is_normal", "value", "comment")
 
     def validate(self, attrs):
         cat = attrs.get("category", getattr(self.instance, "category", None))
@@ -42,37 +46,30 @@ class RecordItemSerializer(serializers.ModelSerializer):
 
         if not is_normal and not comment:
             raise serializers.ValidationError("is_normal=false の場合、comment は必須です。")
-
-        if cat == "temperature" and val is not None and val >= 37.5 and is_normal:
-            raise serializers.ValidationError("体温が37.5℃以上のとき is_normal を true にはできません。")
+        if cat == "temperature" and val is not None:
+            try:
+                if float(val) >= 37.5 and is_normal:
+                    raise serializers.ValidationError("体温が37.5℃以上のとき is_normal を true にはできません。")
+            except (TypeError, ValueError):
+                pass
         return attrs
 
 class RecordSerializer(serializers.ModelSerializer):
-    items = RecordItemSerializer(many=True)
+    items = RecordItemSerializer(many=True, read_only=True)
+    # モデルに無い派生フィールド
+    supervisor_code = serializers.SerializerMethodField()
 
     class Meta:
         model = Record
-        fields = ("id","date","employee","work_start_time","work_end_time","items")
+        # ⚠️ モデルに存在しない `supervisor` は入れない
+        fields = ("id", "date", "employee", "work_start_time", "work_end_time", "items","supervisor_selected", "supervisor_code")
 
-    def create(self, validated_data):
-        items = validated_data.pop("items", [])
-        record = Record.objects.create(**validated_data)
-        for it in items:
-            RecordItem.objects.create(record=record, **it)
-        return record
+    def get_supervisor_code(self, obj):
+        sc = getattr(obj, "supervisor_confirmation", None)
+        if sc and sc.confirmed_by and sc.confirmed_by.code:
+            return sc.confirmed_by.code
+        return getattr(obj.supervisor_selected, "code", None)
 
-    def update(self, instance, validated_data):
-        items = validated_data.pop("items", None)
-        for attr, val in validated_data.items():
-            setattr(instance, attr, val)
-        instance.save()
-        if items is not None:
-            # まとめ更新（カテゴリ一意を保つ）
-            for it in items:
-                RecordItem.objects.update_or_create(
-                    record=instance, category=it["category"], defaults=it
-                )
-        return instance
 
 class SupervisorConfirmationSerializer(serializers.ModelSerializer):
     class Meta:

@@ -376,10 +376,11 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
 }
 
 /** 当日のレコードと明細を取得（フォームの自動反映用） */
+// src/lib/hygieneAdapter.ts
 export async function getTodayRecordWithItems(
   employeeCode: string,
   dateISO: string
-): Promise<{ record: RecordRow | null; items: RecordItemRow[] }> {
+): Promise<{ record: RecordRow | null; items: RecordItemRow[]; supervisorCode?: string | null }> {
   if (!USE_API) {
     const id = `${dateISO}-${employeeCode}`;
     const recs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []);
@@ -389,12 +390,13 @@ export async function getTodayRecordWithItems(
 
     if (r) {
       const record = {
-        id: 0, // 使われないのでダミー
+        id: 0, // ダミー
         employeeCode: r.employeeCode,
         date: r.date,
         work_start_time: r.work_start_time ?? null,
         work_end_time: r.work_end_time ?? null,
       } as unknown as RecordRow;
+
       const rows = its.map(
         (it, idx) =>
           ({
@@ -406,15 +408,18 @@ export async function getTodayRecordWithItems(
             comment: it.value ?? null,
           }) as unknown as RecordItemRow
       );
-      return { record, items: rows };
+
+      // モック時は supervisor を保持していないので null を返す
+      return { record, items: rows, supervisorCode: null };
     }
 
-    // 互換: 既存モックにも一応フォールバック
+    // モックのフォールバック
     const rec = mockRecords.find((x) => x.employeeCode === employeeCode && x.date === dateISO) ?? null;
     const its2 = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
-    return { record: rec as unknown as RecordRow, items: its2 as unknown as RecordItemRow[] };
+    return { record: rec as unknown as RecordRow, items: its2 as unknown as RecordItemRow[], supervisorCode: null };
   }
 
+  // ===== API モード =====
   type ApiItem = { id: number; category: string; is_normal: boolean; value: number | string | null; comment: string };
   type ApiRecord = {
     id: number;
@@ -423,6 +428,7 @@ export async function getTodayRecordWithItems(
     work_start_time: string | null;
     work_end_time: string | null;
     items: ApiItem[];
+    supervisor_code?: string | null;   // ★ サーバが返す
   };
 
   const list = await apiGet<ApiRecord[]>(
@@ -454,7 +460,8 @@ export async function getTodayRecordWithItems(
       ) as unknown as RecordItemRow[])
     : [];
 
-  return { record, items };
+  // ★ ここで supervisorCode を返す（文字列 or null）
+  return { record, items, supervisorCode: rec?.supervisor_code ?? null };
 }
 
 /* --------------------------------
@@ -700,9 +707,10 @@ type WriteItem = {
 export async function submitDailyForm(params: {
   employeeCode: string;
   dateISO: string;
-  workStartTime?: string | null; // "08:30" 形式
-  workEndTime?: string | null; // "17:15" 形式
-  items: WriteItem[];
+  workStartTime?: string | null;
+  workEndTime?: string | null;
+  items: { category: string; is_normal: boolean; value?: string | number | null; comment?: string | null; }[];
+  supervisorCode?: string | null;   // ★追加
 }): Promise<void> {
   if (USE_API) {
     const payload = {
@@ -710,6 +718,7 @@ export async function submitDailyForm(params: {
       date: params.dateISO,
       work_start_time: params.workStartTime ?? null,
       work_end_time: params.workEndTime ?? null,
+      supervisor_code: params.supervisorCode ?? null,
       items: params.items.map((it) => ({
         category: it.category,
         is_normal: !!it.is_normal,

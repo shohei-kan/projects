@@ -103,6 +103,9 @@ class Record(models.Model):
     )
     work_start_time = models.TimeField(null=True, blank=True)
     work_end_time = models.TimeField(null=True, blank=True)
+    
+    supervisor_selected = models.ForeignKey(
+        Employee, null=True, blank=True, on_delete=models.SET_NULL, related_name="supervised_records")
 
     class Meta:
         # 1日×従業員で一意

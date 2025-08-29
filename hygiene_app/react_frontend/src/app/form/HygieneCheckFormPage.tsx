@@ -261,8 +261,17 @@ export default function DailyHygieneCheckForm() {
 
     let aborted = false;
     (async () => {
-      const { record, items } = await getTodayRecordWithItems(code, basicInfo.date);
+      const { record, items, supervisorCode } =
+        await getTodayRecordWithItems(code, basicInfo.date);
       if (aborted) return;
+
+      // ★ 確認者コードが返ってきたら、未選択のときだけ自動セット
+      if ((supervisorCode ?? "") !== "") {
+        setBasicInfo(prev =>
+          prev.supervisor ? prev : { ...prev, supervisor: supervisorCode! }
+        );
+      }
+
 
       // レコードがあれば「出勤日」に寄せる（※手動切替は尊重）
       if (record?.work_start_time) {
@@ -325,7 +334,7 @@ export default function DailyHygieneCheckForm() {
       aborted = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [basicInfo.employee, employeeCodeParam, currentStep, navigate, workType]);
+  }, [basicInfo.employee, employeeCodeParam, basicInfo.date]);
 
   /* ---------- ヘルパ ---------- */
   const updateCheckItem = (
@@ -433,6 +442,7 @@ const handleStep1Save = async () => {
     workStartTime: workType === "work" ? "08:30" : null, // 必要に応じてUI化
     workEndTime: null,
     items,
+    supervisorCode: basicInfo.supervisor || null,
   } as const;
 
   try {
@@ -477,6 +487,7 @@ const handleFinalSubmit = async () => {
       is_normal: c.checked,
       comment: c.comment || null,
     })),
+    supervisorCode: basicInfo.supervisor || null,
   } as const;
 
   try {
@@ -685,12 +696,16 @@ const handleFinalSubmit = async () => {
                         <div className="space-y-1">
                           <span className="text-gray-900 text-sm">確認者名</span>
                           <Select
-                            value={basicInfo.supervisor}
-                            onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
+                            value={basicInfo.supervisor || ""}               // ← 空は "" を渡す
+                            onValueChange={(code) =>
+                              setBasicInfo({ ...basicInfo, supervisor: code })
+                            }
                           >
                             <SelectTrigger
                               className={`text-sm rounded-xl px-3 py-2 ${
-                                !basicInfo.supervisor ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
+                                !basicInfo.supervisor
+                                  ? "border-amber-300 bg-amber-50"
+                                  : "border-gray-300 bg-white"
                               }`}
                             >
                               <SelectValue placeholder="確認者を選択" />
@@ -703,7 +718,7 @@ const handleFinalSubmit = async () => {
                               {employeesInOffice.map((e) => (
                                 <SelectItem
                                   key={e.code}
-                                  value={e.code}
+                                  value={e.code}                           // ← value は“コード”
                                   className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
                                 >
                                   {e.name}
