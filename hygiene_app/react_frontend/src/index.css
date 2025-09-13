@@ -1,73 +1,162 @@
-@import './styles/globals.css';
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-
-
-
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/* ---- shadcn/ui Calendar (react-day-picker v8) 修正 ---- */
+.rdp {
+  --rdp-accent-color: #2563eb;     /* blue-600 */
+  --rdp-background-color: #eff6ff; /* blue-50 */
+  margin: 0;
+ 
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+/* 月コンテナは1列でOK */
+.rdp-months { display: block; }
+
+/* ★テーブル化を強制（ここが崩れ対策の本丸） */
+.rdp-month_grid {               /* <table> */
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
 }
-a:hover {
-  color: #535bf2;
+.rdp-month_grid .rdp-weekdays,  /* <tr> */
+.rdp-month_grid .rdp-week {
+  display: table-row !important;
+}
+.rdp-month_grid th,             /* <th>/<td> */
+.rdp-month_grid td {
+  display: table-cell !important;
+  padding: 0;
+  vertical-align: middle;
+  text-align: center;
 }
 
-
-
-
-
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+/* 日ボタンは素の見た目に（外部の button スタイルを無効化） */
+.rdp .rdp-day_button,
+.rdp .rdp-button_previous,
+.rdp .rdp-button_next {
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.rdp .rdp-day_button:focus,
+.rdp .rdp-day_button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
-button {
+/* 選択日の色 */
+.rdp-day_selected,
+.rdp-day_selected:focus-visible,
+.rdp-day_selected:hover {
+  background-color: var(--rdp-accent-color);
+  color: #fff;
+}
+
+/* --- “記録あり”の緑丸 --- */
+.rdp-day_button.has-record,
+td.has-record .rdp-day_button { position: relative; }
+.rdp-day_button.has-record::after,
+td.has-record .rdp-day_button::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #16a34a; /* green-600 */
+}
+/* ===== DayPicker 見やすさ向上 ===== */
+.rdp {
+  --rdp-accent-color: #2563eb;     /* blue-600: 選択日の色 */
+  --rdp-background-color: #eff6ff; /* blue-50: hover 背景 */
+  --rdp-cell-size: 36px;           /* セルの大きさ */
+  color: #111827;                  /* text-gray-900 相当 */
+  background: #ffffff;             /* ポップオーバー内の地色 */
+}
+
+/* 月名・曜日を中央＆控えめ */
+/* .rdp-month_caption { text-align: center; font-weight: 600; } */
+.rdp-weekday { font-size: 12px; color: #6b7280; } /* text-gray-500 */
+
+/* 日セルの基本（丸ボタン） */
+.rdp .rdp-day_button {
+  width: var(--rdp-cell-size) !important;
+  height: var(--rdp-cell-size) !important;
+  line-height: var(--rdp-cell-size) !important;
+  border-radius: 9999px !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  color: inherit;
+}
+.rdp .rdp-day_button:hover { background: var(--rdp-background-color) !important; }
+
+/* 今日の薄いリング */
+.rdp-today .rdp-day_button {
+  box-shadow: inset 0 0 0 1.5px #93c5fd !important; /* blue-300 */
+}
+
+/* 選択日 */
+.rdp-day_selected,
+.rdp-day_selected:hover,
+.rdp-day_selected:focus-visible {
+  background: var(--rdp-accent-color) !important;
+  color: #fff !important;
+}
+
+/* 当月外は薄く */
+.rdp-outside .rdp-day_button { color: #9ca3af !important; } /* text-gray-400 */
+
+/* “記録あり”の緑丸（下付きドット） */
+.rdp-day_button.has-record,
+td.has-record .rdp-day_button { position: relative; }
+.rdp-day_button.has-record::after,
+td.has-record .rdp-day_button::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #16a34a; /* green-600 */
+}
+
+/* 既に入れてある“テーブル化の強制”は残してOK（はみ出し予防の要） */
+
+/* ルートを配置の基準にする（cal-scope はあなたのPopoverのラッパー） */
+.cal-scope .rdp-root { position: relative; }
+
+/* DayPickerが吐く nav（.rdp-nav ではない）を右上に固定 */
+.cal-scope .rdp-root nav[aria-label] {
+  position: absolute !important;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
+
+/* 見出しを中央寄せして、右にナビぶんの余白を確保 */
+.cal-scope .rdp-root .rdp-caption {
+  padding: 8px 48px 6px;
+  text-align: center;
+  font-weight: 600;
+}
+.cal-scope .rdp-root .rdp-caption_label {
+  text-align: center;
+  font-weight: 600;
+}
+
+/* （お好み）ナビボタンの見た目 */
+.cal-scope .rdp-root .rdp-button_previous,
+.cal-scope .rdp-root .rdp-button_next {
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
 }

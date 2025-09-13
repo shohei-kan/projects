@@ -1,6 +1,7 @@
 // src/lib/hygieneAdapter.ts
 import { TODAY_STR } from "@/data/mockDate";
 import { mockBranches, mockEmployees, mockRecords, mockRecordItems } from "@/data";
+import { format } from "date-fns";
 
 // --- debug: build-time env を確認（あとで消してOK） ---
 if (typeof window !== "undefined") {
@@ -19,12 +20,22 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 const USE_API = (import.meta.env.VITE_USE_API ?? "1") === "1";
 
 async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`);
-  if (!r.ok) {
-    const text = await r.text().catch(() => "");
-    throw new Error(`${path} GET failed (${r.status}): ${text}`);
+  const res = await fetch(`${API_BASE}${path}`, {
+    // 認証を入れる予定があるなら "include" に切替（今は不要なら削ってOK）
+    // credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${path} GET failed (${res.status}): ${body || res.statusText}`);
   }
-  return r.json() as Promise<T>;
+
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new Error(`${path} returned non-JSON response`);
+  }
 }
 
 /* =========================
@@ -105,7 +116,7 @@ export const getOfficeNames = (): string[] => Array.from(officeNameToCodes.keys(
 export const getEmployeeNames = (officeName?: string): string[] => {
   if (!officeName || !officeNameToCodes.has(officeName)) {
     return mockEmployees.map((e) => e.name);
-    }
+  }
   const codes = officeNameToCodes.get(officeName)!;
   return mockEmployees.filter((e) => codes.includes(e.branchCode)).map((e) => e.name);
 };
@@ -129,7 +140,6 @@ const statusFromRecord = (
   if (rec.work_start_time != null && rec.work_start_time !== "") return "出勤入力済";
   return "未入力";
 };
-
 
 /* --------------------------------
  * 表データ（ローカル優先で構築）
@@ -307,7 +317,6 @@ export type RecordRow = (typeof mockRecords)[number];
 export type RecordItemRow = (typeof mockRecordItems)[number];
 
 /** ブランチコードで従業員一覧を取得（フォームのプルダウン用） */
-// src/lib/hygieneAdapter.ts
 export async function getEmployeesByBranch(branchCode: string): Promise<EmployeeRow[]> {
   const useApi = (import.meta.env.VITE_USE_API ?? "1") === "1";
 
@@ -376,7 +385,6 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
 }
 
 /** 当日のレコードと明細を取得（フォームの自動反映用） */
-// src/lib/hygieneAdapter.ts
 export async function getTodayRecordWithItems(
   employeeCode: string,
   dateISO: string
@@ -709,8 +717,8 @@ export async function submitDailyForm(params: {
   dateISO: string;
   workStartTime?: string | null;
   workEndTime?: string | null;
-  items: { category: string; is_normal: boolean; value?: string | number | null; comment?: string | null; }[];
-  supervisorCode?: string | null;   // ★追加
+  items: { category: string; is_normal: boolean; value?: string | number | null; comment?: string | null }[];
+  supervisorCode?: string | null; // ★追加
 }): Promise<void> {
   if (USE_API) {
     const payload = {
@@ -759,4 +767,31 @@ export async function getBranchExpectedPin(branchCode: string): Promise<string |
   // 数値でも文字列でも受け取り、4桁ゼロパディングして返す
   const s = String(pinRaw);
   return /^\d+$/.test(s) ? s.padStart(4, "0") : s;
+}
+
+/* --------------------------------
+ * カレンダー（フォームの丸表示用）
+ * -------------------------------- */
+type CalendarStatusResponse = { dates: string[] };
+
+export async function getCalendarStatus(employeeCode: string, month: string): Promise<Set<string>> {
+  const url = `/api/records/calendar_status/?employee_code=${encodeURIComponent(employeeCode)}&month=${encodeURIComponent(month)}`;
+  try {
+    const { dates } = await apiGet<CalendarStatusResponse>(url);
+    return new Set(Array.isArray(dates) ? dates : []);
+  } catch (e) {
+    console.warn("[calendar] calendar_status fetch failed:", e);
+    return new Set();
+  }
+}
+
+// 互換ラッパ：配列で欲しい場合
+export async function getCalendarMarks(employeeCode: string, ym: string): Promise<string[]> {
+  if (!USE_API) {
+    // モック: 当月の1,3,5日に丸
+    const d = new Date(ym + "-01");
+    return [1, 3, 5].map((n) => format(new Date(d.getFullYear(), d.getMonth(), n), "yyyy-MM-dd"));
+  }
+  const set = await getCalendarStatus(employeeCode, ym);
+  return Array.from(set).sort();
 }

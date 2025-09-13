@@ -1,7 +1,7 @@
 // src/app/form/HygieneCheckFormPage.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState,useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 // UI
@@ -19,9 +19,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { format, parseISO, startOfMonth } from "date-fns";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";              // shadcnのCalendar（react-day-pickerラップ）
 // Icons
 import {
-  Calendar,
+  Calendar as CalendarIcon,
   Save,
   AlertTriangle,
   Heart,
@@ -35,9 +38,10 @@ import {
 } from "lucide-react";
 
 // Adapter（モック→APIの差し替えポイント）
-import { getEmployeesByBranch, getTodayRecordWithItems, submitDailyForm } from "@/lib/hygieneAdapter";
+import { getEmployeesByBranch, getTodayRecordWithItems, submitDailyForm,getCalendarStatus } from "@/lib/hygieneAdapter";
 import { TODAY_STR } from "@/data/mockDate";
-
+import { ja } from "date-fns/locale";
+import type { Formatters } from "react-day-picker";
 /* ---------------- Types ---------------- */
 interface CheckItem {
   id: string;
@@ -257,6 +261,7 @@ export default function DailyHygieneCheckForm() {
     );
   };
 
+  
   // 選択された従業員と今日の入力を取得して反映
   useEffect(() => {
     const code = basicInfo.employee || employeeCodeParam;
@@ -338,6 +343,7 @@ export default function DailyHygieneCheckForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basicInfo.employee, employeeCodeParam, basicInfo.date, workType, currentStep]);
 
+  
   /* ---------- ヘルパ ---------- */
   const updateCheckItem = (
     items: CheckItem[],
@@ -519,6 +525,48 @@ export default function DailyHygieneCheckForm() {
     }
   };
 
+  // 曜日やキャプションの日本語フォーマッタ
+const jpFormatters = {
+  formatCaption: (month: Date) => format(month, "yyyy年 M月", { locale: ja }),
+  formatWeekdayName: (day: Date) => format(day, "eee", { locale: ja }), // 日 月 火 …
+};
+const formatCaption: Formatters["formatCaption"] = (month) =>
+  format(month, "yyyy年M月", { locale: ja });
+// 丸を付ける日付セット
+const [marks, setMarks] = useState<Set<string>>(new Set());
+
+// 月の印を読み込む
+const loadMarks = useCallback(async (monthDate: Date, empCode: string) => {
+  try {
+    const ym = format(monthDate, "yyyy-MM");
+    // hygieneAdapter の getCalendarStatus(Set<string>返す)を利用
+    const set = await getCalendarStatus(empCode, ym);
+    setMarks(set);
+  } catch (e) {
+    console.warn("[calendar] loadMarks failed:", e);
+    setMarks(new Set());
+  }
+}, []);
+
+// ★ 表示中の月（初期は選択日の月）
+const [month, setMonth] = useState<Date>(() =>
+  startOfMonth(parseISO(basicInfo.date))
+);
+
+useEffect(() => {
+  const code = basicInfo.employee || employeeCodeParam;
+  if (!code || !basicInfo.date) return;
+  const m = startOfMonth(parseISO(basicInfo.date));
+  setMonth(m);                 // ★ 追加：Calendar の表示月を同期
+  loadMarks(m, code);
+}, [basicInfo.employee, employeeCodeParam, basicInfo.date, loadMarks]);
+
+// ★ Popover を開いた瞬間に必ず当月の marks を用意
+const handleOpenChange = (open: boolean) => {
+  if (!open) return;
+  const code = basicInfo.employee || employeeCodeParam;
+  if (code) loadMarks(month, code);
+};
   /* ---------------- Render ---------------- */
   return (
     <div className="hygiene-form min-h-screen bg-gray-50 py-4 relative">
@@ -619,7 +667,7 @@ export default function DailyHygieneCheckForm() {
                     <CardHeader>
                       <div className="flex items-center justify-between w-full">
                         <div className="flex items-center space-x-2">
-                          <Calendar className="w-5 h-5 text-gray-500" />
+                          <CalendarIcon className="w-5 h-5 text-gray-500" />
                           <CardTitle className="text-gray-700 text-lg">基本情報</CardTitle>
                         </div>
                         {basicInfo.employee && (
@@ -634,16 +682,59 @@ export default function DailyHygieneCheckForm() {
 
                     <CardContent className="space-y-4 pt-4 pb-4">
                       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        {/* 日付 */}
+
+                        {/* 日付（置き換え） */}
                         <div className="space-y-1">
                           <span className="text-gray-900 text-sm">日付</span>
-                          <Input
-                            id="date"
-                            type="date"
-                            value={basicInfo.date}
-                            onChange={(e) => setBasicInfo({ ...basicInfo, date: e.target.value })}
-                            className="border-gray-300 rounded-xl text-sm"
-                          />
+                          <div className="relative">
+<Popover onOpenChange={handleOpenChange}>
+  <PopoverTrigger asChild>
+    <div role="button" aria-label="カレンダーを開く" className="relative w-full cursor-pointer">
+      <Input
+        id="date"
+        type="text"
+        readOnly
+        value={basicInfo.date}
+        className="border-gray-300 rounded-xl text-sm pr-10 pointer-events-none"
+      />
+      <CalendarIcon className="w-4 h-4 text-gray-600 absolute right-2 top-1/2 -translate-y-1/2" />
+    </div>
+  </PopoverTrigger>
+
+  <PopoverContent
+    forceMount
+    side="bottom"
+    align="start"
+    sideOffset={8}
+    collisionPadding={12}
+    className="z-[60] p-2 w-auto rounded-xl border border-gray-200 bg-white/95 backdrop-blur shadow-lg"
+  >
+    {/* ← これが重要：スコープラッパー */}
+    <div className="cal-scope">
+      <Calendar
+        locale={ja} 
+        formatters={{ formatCaption }}
+        mode="single"
+        month={month}
+        selected={parseISO(basicInfo.date)}
+        onSelect={(d) => { if (d) setBasicInfo(p => ({ ...p, date: format(d, "yyyy-MM-dd") })); }}
+        onMonthChange={(m) => {
+          const first = startOfMonth(m); // ★ 追加：first に正規化
+          setMonth(first);               // ★ 追加：表示月を更新
+          const code = basicInfo.employee || employeeCodeParam;
+          if (code) loadMarks(first, code);
+         }}
+        modifiers={{
+          hasRecord: (day) => marks.has(format(day, "yyyy-MM-dd")),
+        }}
+        modifiersClassNames={{
+          hasRecord: "has-record",     // ← CSSで丸枠
+        }}
+      />
+    </div>
+  </PopoverContent>
+</Popover>
+</div>
                         </div>
 
                         {/* 従業員 */}
