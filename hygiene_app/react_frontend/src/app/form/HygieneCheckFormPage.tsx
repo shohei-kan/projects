@@ -419,8 +419,12 @@ export default function DailyHygieneCheckForm() {
       alert("異常が報告されている項目について、詳細コメントが必要です。");
       return;
     }
-    if (!basicInfo.employee || !basicInfo.supervisor) {
-      alert("従業員名と確認者名を入力してください。");
+    if (!basicInfo.employee) {
+      alert("従業員名を選択してください。");
+      return;
+    }
+    if (workType === "work" && !basicInfo.supervisor) {
+      alert("確認者名を入力してください（出勤日のみ必須）。");
       return;
     }
 
@@ -661,7 +665,9 @@ const handleOpenChange = (open: boolean) => {
                 <div className="mb-8">
                   <Card
                     className={`border-gray-200 ${
-                      !basicInfo.employee || !basicInfo.supervisor ? "ring-2 ring-amber-200" : ""
+                      !basicInfo.employee || (workType === "work" && !basicInfo.supervisor)
+                        ? "ring-2 ring-amber-200"
+                        : ""
                     }`}
                   >
                     <CardHeader>
@@ -687,54 +693,54 @@ const handleOpenChange = (open: boolean) => {
                         <div className="space-y-1">
                           <span className="text-gray-900 text-sm">日付</span>
                           <div className="relative">
-<Popover onOpenChange={handleOpenChange}>
-  <PopoverTrigger asChild>
-    <div role="button" aria-label="カレンダーを開く" className="relative w-full cursor-pointer">
-      <Input
-        id="date"
-        type="text"
-        readOnly
-        value={basicInfo.date}
-        className="border-gray-300 rounded-xl text-sm pr-10 pointer-events-none"
-      />
-      <CalendarIcon className="w-4 h-4 text-gray-600 absolute right-2 top-1/2 -translate-y-1/2" />
-    </div>
-  </PopoverTrigger>
+                          <Popover onOpenChange={handleOpenChange}>
+                            <PopoverTrigger asChild>
+                              <div role="button" aria-label="カレンダーを開く" className="relative w-full cursor-pointer">
+                                <Input
+                                  id="date"
+                                  type="text"
+                                  readOnly
+                                  value={basicInfo.date}
+                                  className="border-gray-300 rounded-xl text-sm pr-10 pointer-events-none"
+                                />
+                                <CalendarIcon className="w-4 h-4 text-gray-600 absolute right-2 top-1/2 -translate-y-1/2" />
+                              </div>
+                            </PopoverTrigger>
 
-  <PopoverContent
-    forceMount
-    side="bottom"
-    align="start"
-    sideOffset={8}
-    collisionPadding={12}
-    className="z-[60] p-2 w-auto rounded-xl border border-gray-200 bg-white/95 backdrop-blur shadow-lg"
-  >
-    {/* ← これが重要：スコープラッパー */}
-    <div className="cal-scope">
-      <Calendar
-        locale={ja} 
-        formatters={{ formatCaption }}
-        mode="single"
-        month={month}
-        selected={parseISO(basicInfo.date)}
-        onSelect={(d) => { if (d) setBasicInfo(p => ({ ...p, date: format(d, "yyyy-MM-dd") })); }}
-        onMonthChange={(m) => {
-          const first = startOfMonth(m); // ★ 追加：first に正規化
-          setMonth(first);               // ★ 追加：表示月を更新
-          const code = basicInfo.employee || employeeCodeParam;
-          if (code) loadMarks(first, code);
-         }}
-        modifiers={{
-          hasRecord: (day) => marks.has(format(day, "yyyy-MM-dd")),
-        }}
-        modifiersClassNames={{
-          hasRecord: "has-record",     // ← CSSで丸枠
-        }}
-      />
-    </div>
-  </PopoverContent>
-</Popover>
-</div>
+                            <PopoverContent
+                              forceMount
+                              side="bottom"
+                              align="start"
+                              sideOffset={8}
+                              collisionPadding={12}
+                              className="z-[60] p-2 w-auto rounded-xl border border-gray-200 bg-white/95 backdrop-blur shadow-lg"
+                            >
+                              {/* ← これが重要：スコープラッパー */}
+                              <div className="cal-scope">
+                                <Calendar
+                                  locale={ja} 
+                                  formatters={{ formatCaption }}
+                                  mode="single"
+                                  month={month}
+                                  selected={parseISO(basicInfo.date)}
+                                  onSelect={(d) => { if (d) setBasicInfo(p => ({ ...p, date: format(d, "yyyy-MM-dd") })); }}
+                                  onMonthChange={(m) => {
+                                    const first = startOfMonth(m); // ★ 追加：first に正規化
+                                    setMonth(first);               // ★ 追加：表示月を更新
+                                    const code = basicInfo.employee || employeeCodeParam;
+                                    if (code) loadMarks(first, code);
+                                  }}
+                                  modifiers={{
+                                    hasRecord: (day) => marks.has(format(day, "yyyy-MM-dd")),
+                                  }}
+                                  modifiersClassNames={{
+                                    hasRecord: "has-record",     // ← CSSで丸枠
+                                  }}
+                                />
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                          </div>
                         </div>
 
                         {/* 従業員 */}
@@ -769,38 +775,39 @@ const handleOpenChange = (open: boolean) => {
                           </Select>
                         </div>
 
-                        {/* 確認者 */}
-                        <div className="space-y-1">
-                          <span className="text-gray-900 text-sm">確認者名</span>
-                          <Select
-                            value={basicInfo.supervisor || ""}
-                            onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
-                          >
-                            <SelectTrigger
-                              className={`text-sm rounded-xl px-3 py-2 ${
-                                !basicInfo.supervisor ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
-                              }`}
+                        {/* 確認者（出勤日のみ表示） */}
+                        {workType === "work" && (
+                          <div className="space-y-1">
+                            <span className="text-gray-900 text-sm">確認者名</span>
+                            <Select
+                              value={basicInfo.supervisor || ""}
+                              onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
                             >
-                              <SelectValue placeholder="確認者を選択" />
-                            </SelectTrigger>
-                            <SelectContent
-                              position="popper"
-                              sideOffset={6}
-                              className="z-[100] w-[240px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
-                            >
-                              {employeesInOffice.map((e) => (
-                                <SelectItem
-                                  key={e.code}
-                                  value={e.code}
-                                  className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
-                                >
-                                  {e.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
+                              <SelectTrigger
+                                className={`text-sm rounded-xl px-3 py-2 ${
+                                  !basicInfo.supervisor ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
+                                }`}
+                              >
+                                <SelectValue placeholder="確認者を選択" />
+                              </SelectTrigger>
+                              <SelectContent
+                                position="popper"
+                                sideOffset={6}
+                                className="z-[100] w-[240px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                              >
+                                {employeesInOffice.map((e) => (
+                                  <SelectItem
+                                    key={e.code}
+                                    value={e.code}
+                                    className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
+                                  >
+                                    {e.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
                         {/* 勤務区分（ここでも変更可能） */}
                         <div className="space-y-1">
                           <span className="text-gray-900 text-sm">勤務区分</span>
