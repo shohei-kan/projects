@@ -883,31 +883,22 @@ const handleOpenChange = (open: boolean) => {
                         {healthChecks.map((item) => (
                           <div key={item.id} className="space-y-2">
                             <div className="flex items-start space-x-2">
-                              <Checkbox
-                                id={item.id}
-                                checked={item.checked}
-                                onCheckedChange={(checked) =>
-                                  updateCheckItem(healthChecks, setHealthChecks, item.id, checked as boolean)
-                                }
-                                className={`border-gray-300 mt-0.5 ${
-                                  item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
-                                }`}
-                              />
-                              <div className="flex-1">
-                                <span className={`leading-relaxed text-sm ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
-                                  {item.label}
-                                </span>
-                                {!item.checked && item.guidance && (
-                                  <div className="mt-2">
-                                    <Alert className="border-amber-200 bg-amber-50 py-2 px-3">
-                                      <AlertDescription className="text-amber-800 text-xs leading-tight">
-                                        {item.guidance}
-                                      </AlertDescription>
-                                    </Alert>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
+                              <label htmlFor={item.id} className="flex items-center gap-3 cursor-pointer select-none">
+   <Checkbox
+     id={item.id}
+     checked={item.checked}
+     onCheckedChange={(checked) =>
+       updateCheckItem(healthChecks, setHealthChecks, item.id, checked as boolean)
+     }
+     className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
+       item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
+     }`}
+   />
+   <span className={`text-sm leading-4 ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
+     {item.label}
+   </span>
+ </label>
+ </div>
 
                             {item.requiresComment && (
                               <div className="ml-5 space-y-1">
@@ -1073,28 +1064,19 @@ const handleOpenChange = (open: boolean) => {
           {items.map((item) => (
             <div key={item.id} className="space-y-2">
               <div className="flex items-start space-x-2">
-                <Checkbox
-                  id={item.id}
-                  checked={item.checked}
-                  onCheckedChange={(checked) => updateCheckItem(items, setItems, item.id, checked as boolean)}
-                  className={`border-gray-300 mt-0.5 ${
-                    item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
-                  }`}
-                />
-                <div className="flex-1">
-                  <span className={`leading-relaxed text-sm ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
+                <label htmlFor={item.id} className="flex items-center gap-3 cursor-pointer select-none">
+                  <Checkbox
+                    id={item.id}
+                    checked={item.checked}
+                    onCheckedChange={(checked) => updateCheckItem(items, setItems, item.id, checked as boolean)}
+                    className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
+                      item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
+                    }`}
+                  />
+                  <span className={`text-sm leading-4 ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
                     {item.label}
                   </span>
-                  {!item.checked && item.guidance && (
-                    <div className="mt-2">
-                      <Alert className="border-amber-200 bg-amber-50 py-2 px-3">
-                        <AlertDescription className="text-amber-800 text-xs leading-tight">
-                          {item.guidance}
-                        </AlertDescription>
-                      </Alert>
-                    </div>
-                  )}
-                </div>
+                </label>
               </div>
 
               {item.requiresComment && (
