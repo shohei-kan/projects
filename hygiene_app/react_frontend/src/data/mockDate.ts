@@ -1,11 +1,9 @@
 // src/data/mockDate.ts
-// ← これに置き換え（固定にも戻せるトグル付）
-export const USE_FIXED_TODAY = false;      // ← 開発で固定したい時だけ true
-export const FIXED_TODAY = "2025-08-01";
-// ここを “いま見たい日付” に合わせる（例：2025-08-28）
-export const TODAY_STR = "2025-08-28";
+export const USE_FIXED_TODAY = false as const; // ← 本番/通常は false（リアルタイム）
+export const FIXED_TODAY = "2025-08-01" as const; // ← 固定したい日がある時だけ使う
 
-function jstToday(d = new Date()) {
+export function jstToday(d = new Date()): string {
+  // "YYYY-MM-DD" を返す（en-CAでゼロ埋め、JST基準）
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
     year: "numeric",
@@ -14,4 +12,5 @@ function jstToday(d = new Date()) {
   }).format(d);
 }
 
-// export const TODAY_STR = USE_FIXED_TODAY ? FIXED_TODAY : jstToday();
+// ← これを有効化（固定/リアルタイムをトグル）
+export const TODAY_STR = USE_FIXED_TODAY ? FIXED_TODAY : jstToday();

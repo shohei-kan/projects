@@ -25,7 +25,8 @@ urlpatterns = [
 
     # ← フロントの要求どおり `/api/records/calendar_status/`
     path("records/calendar_status/", CalendarStatusView.as_view(), name="calendar-status"),
-
+    
+    path("branches/", OfficeViewSet.as_view({"get": "list"}), name="branches-alias"),
     # router 配下（/offices/, /employees/, /records/, /confirmations/）
     path("", include(router.urls)),
 ]
