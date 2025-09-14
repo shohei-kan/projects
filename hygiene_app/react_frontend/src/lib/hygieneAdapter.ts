@@ -15,27 +15,19 @@ if (typeof window !== "undefined") {
 /* =========================
  * 共通: APIユーティリティ
  * ========================= */
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
-// 1=APIを使う / 0=ローカル(LS)・モックを使う
+// 置き換え：API_BASE → API_ROOT + join
+const API_ROOT = String(import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const USE_API = (import.meta.env.VITE_USE_API ?? "1") === "1";
 
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    // 認証を入れる予定があるなら "include" に切替（今は不要なら削ってOK）
-    // credentials: "include",
-    headers: { Accept: "application/json" },
-  });
+const join = (p: string) => `${API_ROOT}${p.startsWith("/") ? p : `/${p}`}`;
 
+async function apiGet<T>(path: string): Promise<T> {
+  const res = await fetch(join(path), { headers: { Accept: "application/json" } });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`${path} GET failed (${res.status}): ${body || res.statusText}`);
   }
-
-  try {
-    return (await res.json()) as T;
-  } catch {
-    throw new Error(`${path} returned non-JSON response`);
-  }
+  return (await res.json()) as T;
 }
 
 /* =========================
@@ -369,7 +361,7 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
   try {
     const apiEmps = await apiGet<
       Array<{ id: number; code: string; name: string; office: number; office_name: string }>
-    >(`/api/employees?branch_code=${encodeURIComponent(branchCode)}`);
+    >(`/employees?branch_code=${encodeURIComponent(branchCode)}`);
 
     if (apiEmps.length > 0) {
       return apiEmps.map(
@@ -440,7 +432,7 @@ export async function getTodayRecordWithItems(
   };
 
   const list = await apiGet<ApiRecord[]>(
-    `/api/records/?employee_code=${encodeURIComponent(employeeCode)}&date=${encodeURIComponent(dateISO)}`
+    `/records/?employee_code=${encodeURIComponent(employeeCode)}&date=${encodeURIComponent(dateISO)}`
   );
   const rec = list[0] ?? null;
 
@@ -553,7 +545,7 @@ export async function getDashboardStaffRows(branchCode: string, dateISO: string)
     });
   }
 
-  // API: /api/dashboard?branch_code=...&date=...
+  // API: /dashboard?branch_code=...&date=...
   type ApiRow = {
     id: string;
     name: string;
@@ -564,7 +556,7 @@ export async function getDashboardStaffRows(branchCode: string, dateISO: string)
     comment: string;
   };
   const data = await apiGet<{ rows: ApiRow[] }>(
-    `/api/dashboard?branch_code=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(dateISO)}`
+    `/dashboard?branch_code=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(dateISO)}`
   );
   return data.rows;
 }
@@ -734,7 +726,7 @@ export async function submitDailyForm(params: {
         comment: it.comment ?? null,
       })),
     };
-    const r = await fetch(`${API_BASE}/api/records/submit`, {
+    const r = await fetch(join("/records/submit"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -775,7 +767,7 @@ export async function getBranchExpectedPin(branchCode: string): Promise<string |
 type CalendarStatusResponse = { dates: string[] };
 
 export async function getCalendarStatus(employeeCode: string, month: string): Promise<Set<string>> {
-  const url = `/api/records/calendar_status/?employee_code=${encodeURIComponent(employeeCode)}&month=${encodeURIComponent(month)}`;
+  const url = `/records/calendar_status/?employee_code=${encodeURIComponent(employeeCode)}&month=${encodeURIComponent(month)}`;
   try {
     const { dates } = await apiGet<CalendarStatusResponse>(url);
     return new Set(Array.isArray(dates) ? dates : []);
