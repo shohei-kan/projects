@@ -582,7 +582,7 @@ export const CATEGORY_LABELS: Record<string, { label: string; section: string }>
   proper_handwashing: { label: "手洗い実施", section: "作業後" },
 };
 
-export async function getRecordDetail(row: HygieneRecordRow): Promise<
+export async function getRecordDetailForm(row: HygieneRecordRow): Promise<
   HygieneRecordRow & {
     comment: string;
     items: {

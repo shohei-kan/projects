@@ -1,4 +1,3 @@
-// src/pages/ManagementPage.tsx
 'use client'
 
 import React, { useEffect, useMemo, useState } from 'react'
@@ -20,22 +19,21 @@ import { loadSession } from '@/lib/session'
 
 import {
   getDailyRows,
-  getMonthRows,
   getOfficeNames,
-  getEmployeesByOffice,
+  getEmployeesForOffice,
   getBranchNameByCode,
   canConfirmRow,
   getRecordDetail,
   patchSupervisorConfirm,
   filterRowsByOffice,
+  getMonthRowsByEmployeeId,
   type HygieneRecordRow,
+  type EmployeeLite,
 } from '@/lib/hygieneAdminAdapter'
 
-/* ---------- 詳細モーダル用の型 ---------- */
 type DetailItem = { category: string; label: string; section: string; is_normal: boolean; value: string | null }
 type DetailState = (HygieneRecordRow & { comment: string; items: DetailItem[] }) | null
 
-/* ======= 見た目トークン ======= */
 const fieldBase = 'h-10 w-full rounded-xl border text-sm leading-none focus-visible:outline-none focus-visible:ring-2'
 const fieldMuted = 'bg-gray-50 border-gray-200 text-gray-700 focus-visible:ring-blue-200'
 const triggerClass = `${fieldBase} ${fieldMuted} px-3 justify-between`
@@ -50,11 +48,7 @@ const statusBadge = (s: HygieneRecordRow['status']) => {
     退勤入力済: 'bg-green-50 text-green-700 border border-green-200',
     未入力: 'bg-slate-50 text-slate-700 border border-slate-200',
   }
-  return (
-    <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 ${map[s]}`}>
-      {s}
-    </Badge>
-  )
+  return <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 ${map[s]}`}>{s}</Badge>
 }
 
 export interface HygieneManagementProps {
@@ -62,24 +56,19 @@ export interface HygieneManagementProps {
   onBackToDashboard: () => void
 }
 
-export default function HygieneManagement({
-  onEmployeeListClick,
-  onBackToDashboard,
-}: HygieneManagementProps) {
-  /* ---------- ロール/所属 ---------- */
+export default function HygieneManagement({ onEmployeeListClick, onBackToDashboard }: HygieneManagementProps) {
   const session = loadSession()
   const isHQ = session?.user.role === 'hq_admin'
   const myBranchCode = isHQ ? '' : (session?.user.branchCode ?? '')
 
-  /* ---------- 表示モード ---------- */
   const [mode, setMode] = useState<'daily' | 'monthly'>('daily')
 
-  /* ---------- 営業所/日付/従業員 ---------- */
+  // 営業所
   const [officeNames, setOfficeNames] = useState<string[]>([])
-  const [myOfficeName, setMyOfficeName] = useState<string>('') // 非HQの所属名
+  const [myOfficeName, setMyOfficeName] = useState<string>('')
 
   useEffect(() => {
-    ;(async () => {
+    (async () => {
       const names = await getOfficeNames()
       setOfficeNames(names)
       if (!isHQ && myBranchCode) {
@@ -90,62 +79,79 @@ export default function HygieneManagement({
   }, [isHQ, myBranchCode])
 
   const [selectedDate, setSelectedDate] = useState(new Date(TODAY_STR).toISOString().slice(0, 10))
+  const ym = (selectedDate || TODAY_STR).slice(0, 7)
 
-  // Select は常に「制御」（空文字 = 未選択）
   const [selectedOffice, setSelectedOffice] = useState<string>(isHQ ? '' : '')
-  useEffect(() => {
-    if (!isHQ && myOfficeName) setSelectedOffice(myOfficeName)
-  }, [isHQ, myOfficeName])
+  useEffect(() => { if (!isHQ && myOfficeName) setSelectedOffice(myOfficeName) }, [isHQ, myOfficeName])
 
-  const [employeeOptions, setEmployeeOptions] = useState<string[]>([])
+  // 従業員（構造化）
+  const [employees, setEmployees] = useState<EmployeeLite[]>([])
+  const [nameToId, setNameToId] = useState<Record<string, string>>({})
+  const [idToName, setIdToName] = useState<Record<string, string>>({})
+  const employeeOptions = useMemo(() => employees.map(e => e.name), [employees])
+
   useEffect(() => {
-    ;(async () => {
-      if (!selectedOffice) {
-        setEmployeeOptions([])
-        return
-      }
-      setEmployeeOptions(await getEmployeesByOffice(selectedOffice))
+    (async () => {
+      if (!selectedOffice) { setEmployees([]); setNameToId({}); setIdToName({}); return }
+      const list = await getEmployeesForOffice(selectedOffice)
+      setEmployees(list)
+      const n2i: Record<string, string> = {}
+      const i2n: Record<string, string> = {}
+      for (const e of list) { n2i[e.name] = e.id; i2n[e.id] = e.name }
+      setNameToId(n2i); setIdToName(i2n)
     })()
   }, [selectedOffice])
 
   const [selectedEmployee, setSelectedEmployee] = useState<string>('')
+  useEffect(() => {
+    if (mode === 'monthly' && !selectedEmployee && employees.length > 0) {
+      setSelectedEmployee(employees[0].name)
+    }
+  }, [mode, employees, selectedEmployee])
 
-  /* ---------- テキスト検索 & 絞り込み ---------- */
+  // 検索/フィルタ
   const [q, setQ] = useState('')
   const [abnormalOnly, setAbnormalOnly] = useState(false)
   const [commentOnly, setCommentOnly] = useState(false)
   const [unsubmittedOnly, setUnsubmittedOnly] = useState(false)
 
-  /* ---------- 一覧データ（API） ---------- */
+  // データ
   const [baseRows, setBaseRows] = useState<HygieneRecordRow[]>([])
   const [loading, setLoading] = useState(false)
-  const ym = TODAY_STR.slice(0, 7)
+
+  // 名前の補正（APIが employee=ID を返すだけの時に補う）
+  const fixNames = (rows: HygieneRecordRow[]) =>
+    rows.map((r) => {
+      const eid = (r as any)._employeeId as string | undefined
+      if (eid && /^\d+$/.test(r.employeeName) && idToName[eid]) {
+        return { ...r, employeeName: idToName[eid] }
+      }
+      return r
+    })
 
   useEffect(() => {
-    ;(async () => {
+    (async () => {
       setLoading(true)
       try {
         if (mode === 'daily') {
           if (!selectedOffice || !selectedDate) { setBaseRows([]); return }
           const raw = await getDailyRows(selectedOffice, selectedDate)
-          const strict = await filterRowsByOffice(raw, selectedOffice) // ← 営業所混入防止
-          setBaseRows(strict)
+          const strict = await filterRowsByOffice(raw, selectedOffice)
+          setBaseRows(fixNames(strict))
         } else {
-          if (!selectedEmployee) { setBaseRows([]); return }
-          const raw = await getMonthRows(selectedEmployee, ym)
-          // 念のため名寄せ（空白無視）
-          const cleaned = raw.filter(r => r.employeeName.replace(/\s+/g,'') === selectedEmployee.replace(/\s+/g,''))
-          setBaseRows(cleaned)
+          const empId = nameToId[selectedEmployee]
+          if (!empId) { setBaseRows([]); return }
+          const rows = await getMonthRowsByEmployeeId(empId, ym)
+          setBaseRows(fixNames(rows))
         }
       } finally {
         setLoading(false)
       }
     })()
-  }, [mode, selectedOffice, selectedDate, selectedEmployee, ym])
+  }, [mode, selectedOffice, selectedDate, selectedEmployee, ym, nameToId, idToName])
 
   const rows = baseRows
 
-  // 画面側のフィルター
   const filtered = useMemo(() => {
     return rows.filter((r) => {
       if (q && !r.employeeName.includes(q)) return false
@@ -160,11 +166,10 @@ export default function HygieneManagement({
     (r) => (r.abnormalItems?.length ?? 0) > 0 && !r.supervisorConfirmed
   ).length
 
-  // canConfirmRow 用ロール/所属
   const userRole: 'hq_admin' | 'branch_manager' = isHQ ? 'hq_admin' : 'branch_manager'
   const userOffice = isHQ ? undefined : myOfficeName
 
-  /* ---------- 詳細モーダル ---------- */
+  // 詳細
   const [detailOpen, setDetailOpen] = useState(false)
   const [detail, setDetail] = useState<DetailState>(null)
 
@@ -194,7 +199,7 @@ export default function HygieneManagement({
             <CardTitle className="text-base text-gray-800">表示設定</CardTitle>
           </CardHeader>
           <CardContent className="pt-0">
-            <Tabs value={mode} onValueChange={(v) => setMode(v as any)}>
+            <Tabs value={mode} onValueChange={(v) => setMode(v as 'daily' | 'monthly')}>
               <TabsList className="grid w-full grid-cols-2 rounded-full bg-gray-100 p-1">
                 <TabsTrigger value="daily" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">
                   日次営業所表示
@@ -228,12 +233,7 @@ export default function HygieneManagement({
                       <span className="text-sm font-medium">表示日</span>
                       <div className="relative">
                         <CalendarIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                        <Input
-                          type="date"
-                          value={selectedDate}
-                          onChange={(e) => setSelectedDate(e.target.value)}
-                          className={inputWithIcon}
-                        />
+                        <Input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className={inputWithIcon} />
                       </div>
                     </div>
 
@@ -241,12 +241,7 @@ export default function HygieneManagement({
                       <span className="text-sm font-medium">検索</span>
                       <div className="relative">
                         <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                        <Input
-                          placeholder="従業員名で検索"
-                          value={q}
-                          onChange={(e) => setQ(e.target.value)}
-                          className={inputWithIcon}
-                        />
+                        <Input placeholder="従業員名で検索" value={q} onChange={(e) => setQ(e.target.value)} className={inputWithIcon} />
                       </div>
                     </div>
                   </div>
@@ -259,10 +254,7 @@ export default function HygieneManagement({
                       <span className="text-sm font-medium">営業所</span>
                       <Select
                         value={selectedOffice}
-                        onValueChange={(v) => {
-                          setSelectedOffice(v)
-                          setSelectedEmployee('') // リセット
-                        }}
+                        onValueChange={(v) => { setSelectedOffice(v); setSelectedEmployee('') }}
                         disabled={!isHQ}
                       >
                         <SelectTrigger className={triggerClass}>
@@ -298,12 +290,7 @@ export default function HygieneManagement({
                       <span className="text-sm font-medium">検索</span>
                       <div className="relative">
                         <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                        <Input
-                          placeholder="キーワード検索"
-                          value={q}
-                          onChange={(e) => setQ(e.target.value)}
-                          className={inputWithIcon}
-                        />
+                        <Input placeholder="キーワード検索" value={q} onChange={(e) => setQ(e.target.value)} className={inputWithIcon} />
                       </div>
                     </div>
                   </div>
@@ -315,15 +302,9 @@ export default function HygieneManagement({
 
             {/* チップ */}
             <div className="flex flex-wrap gap-3">
-              <Button type="button" variant="outline" onClick={() => setAbnormalOnly((v) => !v)} className={abnormalOnly ? chipOn : chipOff}>
-                 異常のみ
-              </Button>
-              <Button type="button" variant="outline" onClick={() => setCommentOnly((v) => !v)} className={commentOnly ? chipOn : chipOff}>
-                 コメントあり
-              </Button>
-              <Button type="button" variant="outline" onClick={() => setUnsubmittedOnly((v) => !v)} className={unsubmittedOnly ? chipOn : chipOff}>
-                 未入力のみ
-              </Button>
+              <Button type="button" variant="outline" onClick={() => setAbnormalOnly(v => !v)} className={abnormalOnly ? chipOn : chipOff}>異常のみ</Button>
+              <Button type="button" variant="outline" onClick={() => setCommentOnly(v => !v)} className={commentOnly ? chipOn : chipOff}>コメントあり</Button>
+              <Button type="button" variant="outline" onClick={() => setUnsubmittedOnly(v => !v)} className={unsubmittedOnly ? chipOn : chipOff}>未入力のみ</Button>
             </div>
           </CardContent>
         </Card>
@@ -345,9 +326,7 @@ export default function HygieneManagement({
             <AlertTitle>異常あり</AlertTitle>
             <AlertDescription className="flex items-center gap-3">
               未確認の異常が {abnormalUnconfirmedCount} 件あります。
-              <Button variant="outline" size="sm" onClick={() => setAbnormalOnly(true)}>
-                異常のみ表示
-              </Button>
+              <Button variant="outline" size="sm" onClick={() => setAbnormalOnly(true)}>異常のみ表示</Button>
             </AlertDescription>
           </Alert>
         )}
@@ -359,9 +338,7 @@ export default function HygieneManagement({
               <div className="py-12 text-center text-gray-500">読み込み中…</div>
             ) : filtered.length === 0 ? (
               <div className="py-12 text-center text-gray-500">
-                {mode === 'daily'
-                  ? '営業所と日付を選択すると一覧が表示されます'
-                  : '従業員を選択すると一覧が表示されます'}
+                {mode === 'daily' ? '営業所と日付を選択すると一覧が表示されます' : '従業員を選択すると一覧が表示されます'}
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -380,50 +357,78 @@ export default function HygieneManagement({
                   <TableBody className="[&_tr]:border-b [&_tr]:border-gray-100 [&_tr]:transition-colors [&_tr:hover]:!bg-gray-50">
                     {filtered.map((r) => {
                       const canToggle = canConfirmRow({ role: isHQ ? 'hq_admin' : 'branch_manager', row: r, userOffice })
+                      const canCheck = canToggle && r.status === '退勤入力済'
                       const abnormalLabels = r.abnormalItems ?? []
                       return (
                         <TableRow key={r.id}>
                           <TableCell className="font-medium">
                             <button
                               className="underline decoration-gray-300 hover:decoration-gray-700 underline-offset-2"
-                              onClick={async () => {
-                                setDetail({ ...r, comment: '', items: [] })
-                                setDetailOpen(true)
-                                const d = await getRecordDetail(r.id)
-                                setDetail({ ...r, items: (d?.items ?? []) as DetailItem[], comment: '' })
-                              }}
-                            >
-                              {r.employeeName}
-                            </button>
-                          </TableCell>
+onClick={async () => {
+    setDetail({ ...r, comment: '', items: [] })
+    setDetailOpen(true)
+
+    const d = await getRecordDetail(r.id) // ← admin 版
+
+    const CATEGORY_LABELS: Record<string, {label: string; section: string}> = {
+      temperature: { label: '体温', section: '体温・体調' },
+      no_health_issues: { label: '体調異常なし', section: '体温・体調' },
+      family_no_symptoms: { label: '同居者の症状なし', section: '体温・体調' },
+      no_respiratory_symptoms: { label: '咳・喉の腫れなし', section: '呼吸器' },
+      no_severe_hand_damage: { label: '手荒れ（重度）なし', section: '手指・爪' },
+      no_mild_hand_damage: { label: '手荒れ（軽度）なし', section: '手指・爪' },
+      nails_groomed: { label: '爪・ひげ整っている', section: '身だしなみ' },
+      proper_uniform: { label: '服装が正しい', section: '身だしなみ' },
+      no_work_illness: { label: '作業中の不調なし', section: '作業後' },
+      proper_handwashing: { label: '手洗い実施', section: '作業後' },
+    }
+
+    const normalizeItems = (raw: any[]): DetailItem[] =>
+      (Array.isArray(raw) ? raw : []).map((it: any) => {
+        const cat = String(it?.category ?? it?.key ?? it?.code ?? '')
+        const meta = CATEGORY_LABELS[cat] ?? { label: cat, section: '' }
+        const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
+        const val = it?.comment ?? it?.value ?? null
+        return {
+          category: cat,
+          label: meta.label,
+          section: meta.section,
+          is_normal: isNormal,
+          value: val == null ? null : String(val),
+        }
+      })
+
+    const items = normalizeItems((d as any)?.items ?? (d as any)?.record_items ?? [])
+    const comment =
+      items.filter(x => !x.is_normal && x.value)
+           .map(x => `${x.label}: ${x.value}`)
+           .join(' ／ ') || ''
+
+    setDetail({ ...r, items, comment })
+  }}
+>
+  {r.employeeName}
+</button>                          </TableCell>
                           <TableCell className="text-gray-600">
                             {new Date(r.date).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })}
                           </TableCell>
-                          <TableCell className="text-gray-700">
-                            {abnormalLabels.length ? abnormalLabels.join(', ') : '-'}
-                          </TableCell>
+                          <TableCell className="text-gray-700">{abnormalLabels.length ? abnormalLabels.join(', ') : '-'}</TableCell>
                           <TableCell className="text-center text-lg text-red-400">{abnormalLabels.length ? '●' : ''}</TableCell>
                           <TableCell className="text-center">{r.hasAnyComment ? 'あり' : 'なし'}</TableCell>
                           <TableCell>{statusBadge(r.status)}</TableCell>
                           <TableCell className="text-center">
                             <Checkbox
-                              disabled={!canToggle}
-                              checked={r.supervisorConfirmed}
-                              onCheckedChange={async (checked) => {
-                                if (abnormalLabels.length > 0 && !window.confirm('この記録には異常があります。確認済みにしますか？')) {
-                                  return
-                                }
-                                // 楽観的更新
-                                setBaseRows((prev) =>
-                                  prev.map((x) => (x.id === r.id ? { ...x, supervisorConfirmed: !!checked } : x))
-                                )
-                                try {
-                                  await patchSupervisorConfirm(r.id, !!checked)
-                                } catch {
-                                  // ロールバック
-                                  setBaseRows((prev) =>
-                                    prev.map((x) => (x.id === r.id ? { ...x, supervisorConfirmed: !checked } : x))
-                                  )
+                              title={!canCheck ? '退勤入力済のみ確認できます' : undefined}
+                              disabled={!canCheck}
+                              checked={!!r.supervisorConfirmed}
+                              onCheckedChange={async (checkedVal) => {
+                                const checked = checkedVal === true
+                                if (!canCheck) return
+                                if (abnormalLabels.length > 0 && checked && !window.confirm('この記録には異常があります。確認済みにしますか？')) return
+                                setBaseRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, supervisorConfirmed: checked } : x)))
+                                try { await patchSupervisorConfirm(r.id, checked) }
+                                catch {
+                                  setBaseRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, supervisorConfirmed: !checked } : x)))
                                 }
                               }}
                               className="mx-auto data-[state=checked]:bg-gray-900 data-[state=checked]:text-white"
@@ -439,18 +444,14 @@ export default function HygieneManagement({
           </CardContent>
         </Card>
 
-        <div className="text-center text-xs text-gray-500">
-          ログイン中: {isHQ ? '本社管理者' : '支店管理者'}
-        </div>
+        <div className="text-center text-xs text-gray-500">ログイン中: {isHQ ? '本社管理者' : '支店管理者'}</div>
 
         {/* 詳細ダイアログ */}
         <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
           <DialogContent className="sm:max-w-[760px] rounded-2xl bg-white">
             <DialogHeader>
               <DialogTitle>詳細</DialogTitle>
-              <DialogDescription>
-                従業員が入力した「異常項目ごとのコメント」をカテゴリ辞書に従って表示します。
-              </DialogDescription>
+              <DialogDescription>従業員が入力した「異常項目ごとのコメント」をカテゴリ辞書に従って表示します。</DialogDescription>
             </DialogHeader>
 
             {!detail ? (
@@ -477,15 +478,13 @@ export default function HygieneManagement({
                         <div>コメント（従業員）</div>
                       </div>
                       <div className="divide-y">
-                        {detail.items
-                          .filter((it) => !it.is_normal)
-                          .map((it, i) => (
-                            <div key={i} className="grid grid-cols-3 px-3 py-2">
-                              <div className="text-gray-900">{it.section || '—'}</div>
-                              <div className="text-gray-900">{it.label}</div>
-                              <div className="text-gray-700">{it.value || '—'}</div>
-                            </div>
-                          ))}
+                        {detail.items.filter((it) => !it.is_normal).map((it: DetailItem, i: number) => (
+                          <div key={i} className="grid grid-cols-3 px-3 py-2">
+                            <div className="text-gray-900">{it.section || '—'}</div>
+                            <div className="text-gray-900">{it.label}</div>
+                            <div className="text-gray-700">{it.value || '—'}</div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ) : (
