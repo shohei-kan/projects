@@ -138,12 +138,16 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
           const raw = await getDailyRows(selectedOffice, selectedDate)
           const strict = await filterRowsByOffice(raw, selectedOffice)
           setBaseRows(fixNames(strict))
-        } else {
-          const empId = nameToId[selectedEmployee]
-          if (!empId) { setBaseRows([]); return }
-          const rows = await getMonthRowsByEmployeeId(empId, ym)
-          setBaseRows(fixNames(rows))
-        }
+} else {
+  const empId = nameToId[selectedEmployee]
+  if (!empId) { setBaseRows([]); return }
+  const rows = await getMonthRowsByEmployeeId(empId, ym)
+
+  // ← 月次は officeName が返らない実装があるので、選択中の営業所で補完
+  const completed = rows.map(r => r.officeName ? r : { ...r, officeName: selectedOffice })
+
+  setBaseRows(fixNames(completed))
+}
       } finally {
         setLoading(false)
       }
@@ -356,59 +360,69 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                   </TableHeader>
                   <TableBody className="[&_tr]:border-b [&_tr]:border-gray-100 [&_tr]:transition-colors [&_tr:hover]:!bg-gray-50">
                     {filtered.map((r) => {
-                      const canToggle = canConfirmRow({ role: isHQ ? 'hq_admin' : 'branch_manager', row: r, userOffice })
-                      const canCheck = canToggle && r.status === '退勤入力済'
+                      const canToggle = canConfirmRow({
+                        role: isHQ ? 'hq_admin' : 'branch_manager',
+                        row: r,
+                        userOffice,
+                        // 月次はレコード側の officeName が空のことがあるのでフォールバックを渡す
+                        fallbackOffice: mode === 'monthly' ? selectedOffice : undefined,
+                      })
+
+                      // canConfirmRow 側で「退勤入力済み」チェックも行う想定なら、そのまま true/false を使う
+                      const canCheck = canToggle
+                      // （もし canConfirmRow が退勤チェックをしていない場合は、従来どおり && r.status === '退勤入力済' を足してください）
                       const abnormalLabels = r.abnormalItems ?? []
                       return (
                         <TableRow key={r.id}>
                           <TableCell className="font-medium">
                             <button
                               className="underline decoration-gray-300 hover:decoration-gray-700 underline-offset-2"
-onClick={async () => {
-    setDetail({ ...r, comment: '', items: [] })
-    setDetailOpen(true)
+                                onClick={async () => {
+                                    setDetail({ ...r, comment: '', items: [] })
+                                    setDetailOpen(true)
 
-    const d = await getRecordDetail(r.id) // ← admin 版
+                                    const d = await getRecordDetail(r.id) // ← admin 版
 
-    const CATEGORY_LABELS: Record<string, {label: string; section: string}> = {
-      temperature: { label: '体温', section: '体温・体調' },
-      no_health_issues: { label: '体調異常なし', section: '体温・体調' },
-      family_no_symptoms: { label: '同居者の症状なし', section: '体温・体調' },
-      no_respiratory_symptoms: { label: '咳・喉の腫れなし', section: '呼吸器' },
-      no_severe_hand_damage: { label: '手荒れ（重度）なし', section: '手指・爪' },
-      no_mild_hand_damage: { label: '手荒れ（軽度）なし', section: '手指・爪' },
-      nails_groomed: { label: '爪・ひげ整っている', section: '身だしなみ' },
-      proper_uniform: { label: '服装が正しい', section: '身だしなみ' },
-      no_work_illness: { label: '作業中の不調なし', section: '作業後' },
-      proper_handwashing: { label: '手洗い実施', section: '作業後' },
-    }
+                                    const CATEGORY_LABELS: Record<string, {label: string; section: string}> = {
+                                      temperature: { label: '体温', section: '体温・体調' },
+                                      no_health_issues: { label: '体調異常なし', section: '体温・体調' },
+                                      family_no_symptoms: { label: '同居者の症状なし', section: '体温・体調' },
+                                      no_respiratory_symptoms: { label: '咳・喉の腫れなし', section: '呼吸器' },
+                                      no_severe_hand_damage: { label: '手荒れ（重度）なし', section: '手指・爪' },
+                                      no_mild_hand_damage: { label: '手荒れ（軽度）なし', section: '手指・爪' },
+                                      nails_groomed: { label: '爪・ひげ整っている', section: '身だしなみ' },
+                                      proper_uniform: { label: '服装が正しい', section: '身だしなみ' },
+                                      no_work_illness: { label: '作業中の不調なし', section: '作業後' },
+                                      proper_handwashing: { label: '手洗い実施', section: '作業後' },
+                                    }
 
-    const normalizeItems = (raw: any[]): DetailItem[] =>
-      (Array.isArray(raw) ? raw : []).map((it: any) => {
-        const cat = String(it?.category ?? it?.key ?? it?.code ?? '')
-        const meta = CATEGORY_LABELS[cat] ?? { label: cat, section: '' }
-        const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
-        const val = it?.comment ?? it?.value ?? null
-        return {
-          category: cat,
-          label: meta.label,
-          section: meta.section,
-          is_normal: isNormal,
-          value: val == null ? null : String(val),
-        }
-      })
+                                    const normalizeItems = (raw: any[]): DetailItem[] =>
+                                      (Array.isArray(raw) ? raw : []).map((it: any) => {
+                                        const cat = String(it?.category ?? it?.key ?? it?.code ?? '')
+                                        const meta = CATEGORY_LABELS[cat] ?? { label: cat, section: '' }
+                                        const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
+                                        const val = it?.comment ?? it?.value ?? null
+                                        return {
+                                          category: cat,
+                                          label: meta.label,
+                                          section: meta.section,
+                                          is_normal: isNormal,
+                                          value: val == null ? null : String(val),
+                                        }
+                                      })
 
-    const items = normalizeItems((d as any)?.items ?? (d as any)?.record_items ?? [])
-    const comment =
-      items.filter(x => !x.is_normal && x.value)
-           .map(x => `${x.label}: ${x.value}`)
-           .join(' ／ ') || ''
+                                    const items = normalizeItems((d as any)?.items ?? (d as any)?.record_items ?? [])
+                                    const comment =
+                                      items.filter(x => !x.is_normal && x.value)
+                                          .map(x => `${x.label}: ${x.value}`)
+                                          .join(' ／ ') || ''
 
-    setDetail({ ...r, items, comment })
-  }}
->
-  {r.employeeName}
-</button>                          </TableCell>
+                                    setDetail({ ...r, items, comment })
+                                  }}
+                                >
+                                  {r.employeeName}
+                                </button> 
+                         </TableCell>
                           <TableCell className="text-gray-600">
                             {new Date(r.date).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })}
                           </TableCell>

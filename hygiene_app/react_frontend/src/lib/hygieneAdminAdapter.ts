@@ -648,16 +648,27 @@ export async function patchSupervisorConfirm(recordId: string, confirmed: boolea
 }
 
 /** ================= 権限制御 ================= */
+/** ================= 権限制御（簡易） ================= */
 export function canConfirmRow(opts: {
   role: "hq_admin" | "branch_manager";
   row: HygieneRecordRow;
-  userOffice?: string;
+  userOffice?: string;        // ログインユーザの所属名
+  fallbackOffice?: string;    // ← 追加：画面側で分かる所属（例：月次の selectedOffice）
 }): boolean {
-  const { role, row, userOffice } = opts;
-  if (row.status !== "退勤入力済") return false;   // 退勤済みのみ
+  const { role, row, userOffice, fallbackOffice } = opts;
+
+  // 退勤入力済み以外は不可
+  if (row.status !== "退勤入力済") return false;
+
+  // 本社は全件OK
   if (role === "hq_admin") return true;
-  if (!userOffice) return false;
-  return officeEqByName(row.officeName, userOffice);
+
+  // 支店管理者：所属一致のみOK
+  const rowOffice = row.officeName || fallbackOffice || "";
+  if (!userOffice || !rowOffice) return false;
+
+  // 名称ゆらぎを吸収して比較
+  return officeEqByName(rowOffice, userOffice);
 }
 
 /** ================= 行フィルタ（営業所で厳密に） ================= */
