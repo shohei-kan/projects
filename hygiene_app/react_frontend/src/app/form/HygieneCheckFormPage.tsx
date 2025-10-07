@@ -1,7 +1,7 @@
 // src/app/form/HygieneCheckFormPage.tsx
 "use client";
 
-import { useEffect, useState,useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 // UI
@@ -19,9 +19,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { format, parseISO, startOfMonth } from "date-fns";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";              // shadcnのCalendar（react-day-pickerラップ）
+import { Calendar } from "@/components/ui/calendar"; // shadcn（react-day-picker）
+
+// date-fns
+import { format, parseISO, startOfMonth } from "date-fns";
+import { ja } from "date-fns/locale";
+import type { Formatters } from "react-day-picker";
+
 // Icons
 import {
   Calendar as CalendarIcon,
@@ -37,11 +42,16 @@ import {
   Home,
 } from "lucide-react";
 
-// Adapter（モック→APIの差し替えポイント）
-import { getEmployeesByBranch, getTodayRecordWithItems, submitDailyForm,getCalendarStatus } from "@/lib/hygieneAdapter";
+// Adapter（API/モックの差し替えポイント）
+import {
+  getEmployeesByBranch,
+  getTodayRecordWithItems,
+  submitDailyForm,
+  getCalendarStatus,
+} from "@/lib/hygieneAdapter";
+
 import { TODAY_STR } from "@/data/mockDate";
-import { ja } from "date-fns/locale";
-import type { Formatters } from "react-day-picker";
+
 /* ---------------- Types ---------------- */
 interface CheckItem {
   id: string;
@@ -52,6 +62,30 @@ interface CheckItem {
   guidance?: string;
 }
 type WorkType = "work" | "off";
+
+// 取得レコードを緩く受けるための型（ビルドエラー防止）
+type TodayRecordLike = {
+  work_start_time?: string | null;
+  // 以降はどの実装でも拾えるように緩く
+  status?: unknown;
+  status_jp?: unknown;
+  is_off?: unknown;
+  day_off?: unknown;
+  work_type?: unknown;
+  [k: string]: unknown;
+};
+
+// どの形で返っても拾える「休み」判定
+const isDayOffRecord = (rec: TodayRecordLike | null | undefined) => {
+  if (!rec) return false;
+  return (
+    rec.status === "休み" ||
+    rec.status_jp === "休み" ||
+    rec.is_off === true ||
+    rec.day_off === true ||
+    /off/i.test(String(rec.work_type ?? ""))
+  );
+};
 
 /* ---------------- Component ---------------- */
 export default function DailyHygieneCheckForm() {
@@ -234,6 +268,7 @@ export default function DailyHygieneCheckForm() {
   const [isCheckedIn, setIsCheckedIn] = useState(false);
 
   /* ---------- 既存レコードの反映（アダプター経由） ---------- */
+
   // RecordItem を既存 state に反映する小ユーティリティ
   const patchSection = (
     targetId: string,
@@ -261,7 +296,6 @@ export default function DailyHygieneCheckForm() {
     );
   };
 
-  
   // 選択された従業員と今日の入力を取得して反映
   useEffect(() => {
     const code = basicInfo.employee || employeeCodeParam;
@@ -269,12 +303,18 @@ export default function DailyHygieneCheckForm() {
 
     let aborted = false;
     (async () => {
-      const { record, items, supervisorCode } =
-        await getTodayRecordWithItems(code, basicInfo.date);
+      const { record, items, supervisorCode } = await getTodayRecordWithItems(code, basicInfo.date);
       if (aborted) return;
 
-      const checkedIn = !!record?.work_start_time;
+      const rec = (record ?? null) as TodayRecordLike | null;
+
+      const checkedIn = !!rec?.work_start_time;
       setIsCheckedIn(checkedIn);
+
+      // 休みならフォームを「休日」モードに
+      if (isDayOffRecord(rec)) {
+        setWorkType("off");
+      }
 
       // 確認者コードが返ってきたら、未選択のときだけ自動セット
       if ((supervisorCode ?? "") !== "") {
@@ -296,16 +336,17 @@ export default function DailyHygieneCheckForm() {
       }
 
       // 体温
-      const tempVal = items.find((it) => it.category === "temperature")?.value;
+      const tempVal = items.find((it) => it.category === "temperature")?.value as
+        | number
+        | string
+        | null
+        | undefined;
       if (tempVal !== undefined && tempVal !== null) {
-        setBasicInfo((prev) => ({
-          ...prev,
-          temperature: String(tempVal),
-        }));
+        setBasicInfo((prev) => ({ ...prev, temperature: String(tempVal) }));
       }
 
       // 各カテゴリの is_normal / value を反映
-      for (const it of items) {
+      for (const it of items as Array<{ category: string; is_normal: boolean; value?: any }>) {
         switch (it.category) {
           case "no_health_issues":
           case "family_no_symptoms":
@@ -343,7 +384,6 @@ export default function DailyHygieneCheckForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basicInfo.employee, employeeCodeParam, basicInfo.date, workType, currentStep]);
 
-  
   /* ---------- ヘルパ ---------- */
   const updateCheckItem = (
     items: CheckItem[],
@@ -363,7 +403,8 @@ export default function DailyHygieneCheckForm() {
     );
   };
 
-  const findEmpName = (code: string) => employeesInOffice.find((e) => e.code === code)?.name ?? code;
+  const findEmpName = (code: string) =>
+    employeesInOffice.find((e) => e.code === code)?.name ?? code;
 
   /* ---------- 送信ヘルパ（items整形・コメント要約） ---------- */
   const collectStep1Items = () => {
@@ -390,22 +431,6 @@ export default function DailyHygieneCheckForm() {
     return postWorkChecks.map(toItem);
   };
 
-  const buildSummaryComment = (isStep2: boolean) => {
-    const parts: string[] = [];
-    const temp = parseFloat(basicInfo.temperature);
-    if (!Number.isNaN(temp) && temp >= 37.5) parts.push(`体温${basicInfo.temperature}℃`);
-    const pushFrom = (arr: CheckItem[]) =>
-      arr.filter((i) => !i.checked && i.comment.trim()).forEach((i) => parts.push(`${i.label}: ${i.comment.trim()}`));
-    pushFrom(healthChecks);
-    if (workType === "work") {
-      pushFrom(respiratoryChecks);
-      pushFrom(handHygieneChecks);
-      pushFrom(uniformHygieneChecks);
-    }
-    if (isStep2) pushFrom(postWorkChecks);
-    return parts.length ? parts.join(" / ") : undefined;
-  };
-
   /* ---------- 保存/送信 ---------- */
   const handleStep1Save = async () => {
     // バリデーション
@@ -429,9 +454,13 @@ export default function DailyHygieneCheckForm() {
     }
 
     // 送信用アイテム（API仕様に合わせて comment を送る）
-    const items: { category: string; is_normal: boolean; value?: number | string | null; comment?: string | null }[] = [
-      { category: "temperature", is_normal: true, value: Number(basicInfo.temperature) },
-    ];
+    const items: {
+      category: string;
+      is_normal: boolean;
+      value?: number | string | null;
+      comment?: string | null;
+    }[] = [{ category: "temperature", is_normal: true, value: Number(basicInfo.temperature) }];
+
     const pushFrom = (arr: CheckItem[]) => {
       arr.forEach((c) =>
         items.push({
@@ -497,7 +526,6 @@ export default function DailyHygieneCheckForm() {
       return;
     }
 
-    // 退勤で送るペイロード（必要なら時刻はUIから変更してね）
     const payload = {
       employeeCode: basicInfo.employee,
       dateISO: basicInfo.date,
@@ -529,173 +557,174 @@ export default function DailyHygieneCheckForm() {
     }
   };
 
-  // 曜日やキャプションの日本語フォーマッタ
-const jpFormatters = {
-  formatCaption: (month: Date) => format(month, "yyyy年 M月", { locale: ja }),
-  formatWeekdayName: (day: Date) => format(day, "eee", { locale: ja }), // 日 月 火 …
-};
-const formatCaption: Formatters["formatCaption"] = (month) =>
-  format(month, "yyyy年M月", { locale: ja });
-// 丸を付ける日付セット
-const [marks, setMarks] = useState<Set<string>>(new Set());
+  /* ---------- カレンダーマーク ---------- */
+  const jpFormatters = {
+    formatCaption: (month: Date) => format(month, "yyyy年 M月", { locale: ja }),
+    formatWeekdayName: (day: Date) => format(day, "eee", { locale: ja }),
+  };
+  const formatCaption: Formatters["formatCaption"] = (month) =>
+    format(month, "yyyy年M月", { locale: ja });
 
-// 月の印を読み込む
-const loadMarks = useCallback(async (monthDate: Date, empCode: string) => {
-  try {
-    const ym = format(monthDate, "yyyy-MM");
-    // hygieneAdapter の getCalendarStatus(Set<string>返す)を利用
-    const set = await getCalendarStatus(empCode, ym);
-    setMarks(set);
-  } catch (e) {
-    console.warn("[calendar] loadMarks failed:", e);
-    setMarks(new Set());
-  }
-}, []);
+  // 丸を付ける日付セット
+  const [marks, setMarks] = useState<Set<string>>(new Set());
 
-// ★ 表示中の月（初期は選択日の月）
-const [month, setMonth] = useState<Date>(() =>
-  startOfMonth(parseISO(basicInfo.date))
-);
+  // 月の印を読み込む
+  const loadMarks = useCallback(async (monthDate: Date, empCode: string) => {
+    try {
+      const ym = format(monthDate, "yyyy-MM");
+      const set = await getCalendarStatus(empCode, ym);
+      setMarks(set);
+    } catch (e) {
+      console.warn("[calendar] loadMarks failed:", e);
+      setMarks(new Set());
+    }
+  }, []);
 
-useEffect(() => {
-  const code = basicInfo.employee || employeeCodeParam;
-  if (!code || !basicInfo.date) return;
-  const m = startOfMonth(parseISO(basicInfo.date));
-  setMonth(m);                 // ★ 追加：Calendar の表示月を同期
-  loadMarks(m, code);
-}, [basicInfo.employee, employeeCodeParam, basicInfo.date, loadMarks]);
+  // ★ 表示中の月（初期は選択日の月）
+  const [month, setMonth] = useState<Date>(() => startOfMonth(parseISO(basicInfo.date)));
 
-// ★ Popover を開いた瞬間に必ず当月の marks を用意
-const handleOpenChange = (open: boolean) => {
-  if (!open) return;
-  const code = basicInfo.employee || employeeCodeParam;
-  if (code) loadMarks(month, code);
-};
+  useEffect(() => {
+    const code = basicInfo.employee || employeeCodeParam;
+    if (!code || !basicInfo.date) return;
+    const m = startOfMonth(parseISO(basicInfo.date));
+    setMonth(m); // カレンダーの表示月を同期
+    loadMarks(m, code);
+  }, [basicInfo.employee, employeeCodeParam, basicInfo.date, loadMarks]);
+
+  // ★ Popover を開いた瞬間に必ず当月の marks を用意
+  const handleOpenChange = (open: boolean) => {
+    if (!open) return;
+    const code = basicInfo.employee || employeeCodeParam;
+    if (code) loadMarks(month, code);
+  };
+
   /* ---------------- Render ---------------- */
   return (
     <div className="hygiene-form min-h-screen bg-gray-50 py-4 relative">
-      {
-        !branchCode ? (
-          // ログイン促し
-          <div className="min-h-[60vh] grid place-items-center px-6">
-            <div className="max-w-md w-full bg-white rounded-xl shadow p-6 text-center space-y-4">
-              <p className="text-lg font-medium">従業員データが取得できませんでした。</p>
-              <p className="text-sm text-gray-600">
-                営業所が未設定か、ログイン情報が無効です。もう一度ログインしてください。
-              </p>
-              <button
-                className="inline-flex items-center px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700"
-                onClick={() => {
-                  localStorage.removeItem("isLoggedIn");
-                  localStorage.removeItem("loginDate");
-                  localStorage.removeItem("branchCode");
-                  window.location.href = "/login";
-                }}
-              >
-                ログインへ戻る
-              </button>
-            </div>
-          </div>
-        ) : !empLoaded ? (
-          // ローディング
-          <div className="min-h-[60vh] grid place-items-center">
-            <div className="animate-pulse text-gray-500">読み込み中...</div>
-          </div>
-        ) : employeesInOffice.length === 0 ? (
-          // 空データ
-          <div className="min-h-[60vh] grid place-items-center">
-            <div className="text-gray-600">この営業所に従業員が見つかりませんでした。</div>
-          </div>
-        ) : (
-          <div className="max-w-7xl mx-auto px-4">
-            {/* 右上：ホーム */}
+      {!branchCode ? (
+        // ログイン促し
+        <div className="min-h-[60vh] grid place-items-center px-6">
+          <div className="max-w-md w-full bg-white rounded-xl shadow p-6 text-center space-y-4">
+            <p className="text-lg font-medium">従業員データが取得できませんでした。</p>
+            <p className="text-sm text-gray-600">
+              営業所が未設定か、ログイン情報が無効です。もう一度ログインしてください。
+            </p>
             <button
-              onClick={() => navigate("/dashboard")}
-              className="absolute top-4 right-4 p-2 rounded-xl hover:bg-gray-100 transition"
-              aria-label="ホームへ"
+              className="inline-flex items-center px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700"
+              onClick={() => {
+                localStorage.removeItem("isLoggedIn");
+                localStorage.removeItem("loginDate");
+                localStorage.removeItem("branchCode");
+                window.location.href = "/login";
+              }}
             >
-              <Home className="w-8 h-8 text-gray-600" />
+              ログインへ戻る
             </button>
+          </div>
+        </div>
+      ) : !empLoaded ? (
+        // ローディング
+        <div className="min-h-[60vh] grid place-items-center">
+          <div className="animate-pulse text-gray-500">読み込み中...</div>
+        </div>
+      ) : employeesInOffice.length === 0 ? (
+        // 空データ
+        <div className="min-h-[60vh] grid place-items-center">
+          <div className="text-gray-600">この営業所に従業員が見つかりませんでした。</div>
+        </div>
+      ) : (
+        <div className="max-w-7xl mx-auto px-4">
+          {/* 右上：ホーム */}
+          <button
+            onClick={() => navigate("/dashboard")}
+            className="absolute top-4 right-4 p-2 rounded-xl hover:bg-gray-100 transition"
+            aria-label="ホームへ"
+          >
+            <Home className="w-8 h-8 text-gray-600" />
+          </button>
 
-            {/* ヘッダー */}
-            <div className="mb-6">
-              <h1 className="text-2xl font-medium text-gray-900 mb-4">健康管理チェックフォーム</h1>
+          {/* ヘッダー */}
+          <div className="mb-6">
+            <h1 className="text-2xl font-medium text-gray-900 mb-4">健康管理チェックフォーム</h1>
 
-              {/* ステップ切替（出勤日のみ表示） */}
-              {workType === "work" && (
-                <div className="flex items-center justify-center mb-4 space-x-4">
-                  <Button
-                    variant={currentStep === 1 ? "default" : "outline"}
-                    className={`text-sm rounded-xl px-6 py-2 ${
-                      currentStep === 1
-                        ? "bg-blue-600 text-white hover:bg-blue-700"
-                        : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                    }`}
-                    onClick={() => setCurrentStep(1)}
-                  >
-                    出勤時チェック
-                  </Button>
-                  <Button
-                    variant={currentStep === 2 ? "default" : "outline"}
-                    className={`text-sm rounded-xl px-6 py-2 ${
-                      currentStep === 2
-                        ? "bg-blue-600 text-white hover:bg-blue-700"
-                        : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                    }`}
-                    onClick={() => setCurrentStep(2)}
-                  >
-                    退勤時チェック
-                  </Button>
-                </div>
-              )}
+            {/* ステップ切替（出勤日のみ表示） */}
+            {workType === "work" && (
+              <div className="flex items-center justify-center mb-4 space-x-4">
+                <Button
+                  variant={currentStep === 1 ? "default" : "outline"}
+                  className={`text-sm rounded-xl px-6 py-2 ${
+                    currentStep === 1
+                      ? "bg-blue-600 text-white hover:bg-blue-700"
+                      : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                  }`}
+                  onClick={() => setCurrentStep(1)}
+                >
+                  出勤時チェック
+                </Button>
+                <Button
+                  variant={currentStep === 2 ? "default" : "outline"}
+                  className={`text-sm rounded-xl px-6 py-2 ${
+                    currentStep === 2
+                      ? "bg-blue-600 text-white hover:bg-blue-700"
+                      : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                  }`}
+                  onClick={() => setCurrentStep(2)}
+                >
+                  退勤時チェック
+                </Button>
+              </div>
+            )}
 
-              <p className="text-gray-600 text-sm text-center">
-                {workType === "off"
-                  ? "休日の体調チェックのみを記録します（体温・体調チェック）"
-                  : currentStep === 1
-                  ? "出勤時の衛生管理項目を確認し、記録してください"
-                  : "作業後の確認項目をチェックしてください"}
-              </p>
-            </div>
+            <p className="text-gray-600 text-sm text-center">
+              {workType === "off"
+                ? "休日の体調チェックのみを記録します（体温・体調チェック）"
+                : currentStep === 1
+                ? "出勤時の衛生管理項目を確認し、記録してください"
+                : "作業後の確認項目をチェックしてください"}
+            </p>
+          </div>
 
-            {/* Step 1 */}
-            {currentStep === 1 && (
-              <>
-                {/* 基本情報 */}
-                <div className="mb-8">
-                  <Card
-                    className={`border-gray-200 ${
-                      !basicInfo.employee || (workType === "work" && !basicInfo.supervisor)
-                        ? "ring-2 ring-amber-200"
-                        : ""
-                    }`}
-                  >
-                    <CardHeader>
-                      <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center space-x-2">
-                          <CalendarIcon className="w-5 h-5 text-gray-500" />
-                          <CardTitle className="text-gray-700 text-lg">基本情報</CardTitle>
-                        </div>
-                        {basicInfo.employee && (
-                          <div className="flex items-center justify-center flex-1">
-                            <p className="text-3xl text-gray-700 font-semibold text-center">
-                              👤 {findEmpName(basicInfo.employee)}
-                            </p>
-                          </div>
-                        )}
+          {/* Step 1 */}
+          {currentStep === 1 && (
+            <>
+              {/* 基本情報 */}
+              <div className="mb-8">
+                <Card
+                  className={`border-gray-200 ${
+                    !basicInfo.employee || (workType === "work" && !basicInfo.supervisor)
+                      ? "ring-2 ring-amber-200"
+                      : ""
+                  }`}
+                >
+                  <CardHeader>
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center space-x-2">
+                        <CalendarIcon className="w-5 h-5 text-gray-500" />
+                        <CardTitle className="text-gray-700 text-lg">基本情報</CardTitle>
                       </div>
-                    </CardHeader>
+                      {basicInfo.employee && (
+                        <div className="flex items-center justify-center flex-1">
+                          <p className="text-3xl text-gray-700 font-semibold text-center">
+                            👤 {findEmpName(basicInfo.employee)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </CardHeader>
 
-                    <CardContent className="space-y-4 pt-4 pb-4">
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-
-                        {/* 日付（置き換え） */}
-                        <div className="space-y-1">
-                          <span className="text-gray-900 text-sm">日付</span>
-                          <div className="relative">
+                  <CardContent className="space-y-4 pt-4 pb-4">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      {/* 日付 */}
+                      <div className="space-y-1">
+                        <span className="text-gray-900 text-sm">日付</span>
+                        <div className="relative">
                           <Popover onOpenChange={handleOpenChange}>
                             <PopoverTrigger asChild>
-                              <div role="button" aria-label="カレンダーを開く" className="relative w-full cursor-pointer">
+                              <div
+                                role="button"
+                                aria-label="カレンダーを開く"
+                                className="relative w-full cursor-pointer"
+                              >
                                 <Input
                                   id="date"
                                   type="text"
@@ -715,18 +744,19 @@ const handleOpenChange = (open: boolean) => {
                               collisionPadding={12}
                               className="z-[60] p-2 w-auto rounded-xl border border-gray-200 bg-white/95 backdrop-blur shadow-lg"
                             >
-                              {/* ← これが重要：スコープラッパー */}
                               <div className="cal-scope">
                                 <Calendar
-                                  locale={ja} 
+                                  locale={ja}
                                   formatters={{ formatCaption }}
                                   mode="single"
                                   month={month}
                                   selected={parseISO(basicInfo.date)}
-                                  onSelect={(d) => { if (d) setBasicInfo(p => ({ ...p, date: format(d, "yyyy-MM-dd") })); }}
+                                  onSelect={(d) => {
+                                    if (d) setBasicInfo((p) => ({ ...p, date: format(d, "yyyy-MM-dd") }));
+                                  }}
                                   onMonthChange={(m) => {
-                                    const first = startOfMonth(m); // ★ 追加：first に正規化
-                                    setMonth(first);               // ★ 追加：表示月を更新
+                                    const first = startOfMonth(m);
+                                    setMonth(first);
                                     const code = basicInfo.employee || employeeCodeParam;
                                     if (code) loadMarks(first, code);
                                   }}
@@ -734,28 +764,61 @@ const handleOpenChange = (open: boolean) => {
                                     hasRecord: (day) => marks.has(format(day, "yyyy-MM-dd")),
                                   }}
                                   modifiersClassNames={{
-                                    hasRecord: "has-record",     // ← CSSで丸枠
+                                    hasRecord: "has-record",
                                   }}
                                 />
                               </div>
                             </PopoverContent>
                           </Popover>
-                          </div>
                         </div>
+                      </div>
 
-                        {/* 従業員 */}
+                      {/* 従業員 */}
+                      <div className="space-y-1">
+                        <span className="text-gray-900 text-sm">従業員名</span>
+                        <Select
+                          value={basicInfo.employee}
+                          onValueChange={(code) => setBasicInfo({ ...basicInfo, employee: code })}
+                        >
+                          <SelectTrigger
+                            className={`text-sm rounded-xl px-3 py-2 ${
+                              !basicInfo.employee ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
+                            }`}
+                          >
+                            <SelectValue placeholder="従業員を選択" />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            sideOffset={6}
+                            className="z-[100] w-[240px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                          >
+                            {employeesInOffice.map((e) => (
+                              <SelectItem
+                                key={e.code}
+                                value={e.code}
+                                className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
+                              >
+                                {e.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* 確認者（出勤日のみ表示） */}
+                      {workType === "work" && (
                         <div className="space-y-1">
-                          <span className="text-gray-900 text-sm">従業員名</span>
+                          <span className="text-gray-900 text-sm">確認者名</span>
                           <Select
-                            value={basicInfo.employee}
-                            onValueChange={(code) => setBasicInfo({ ...basicInfo, employee: code })}
+                            value={basicInfo.supervisor || ""}
+                            onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
                           >
                             <SelectTrigger
                               className={`text-sm rounded-xl px-3 py-2 ${
-                                !basicInfo.employee ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
+                                !basicInfo.supervisor ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
                               }`}
                             >
-                              <SelectValue placeholder="従業員を選択" />
+                              <SelectValue placeholder="確認者を選択" />
                             </SelectTrigger>
                             <SelectContent
                               position="popper"
@@ -774,232 +837,235 @@ const handleOpenChange = (open: boolean) => {
                             </SelectContent>
                           </Select>
                         </div>
+                      )}
 
-                        {/* 確認者（出勤日のみ表示） */}
-                        {workType === "work" && (
-                          <div className="space-y-1">
-                            <span className="text-gray-900 text-sm">確認者名</span>
-                            <Select
-                              value={basicInfo.supervisor || ""}
-                              onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
+                      {/* 勤務区分 */}
+                      <div className="space-y-1">
+                        <span className="text-gray-900 text-sm">勤務区分</span>
+                        <Select value={workType} onValueChange={(v) => setWorkType(v as WorkType)}>
+                          <SelectTrigger className="text-sm rounded-xl px-3 py-2 border-gray-300 bg-white">
+                            <SelectValue placeholder="勤務区分" />
+                          </SelectTrigger>
+                          <SelectContent
+                            position="popper"
+                            sideOffset={6}
+                            className="z-[100] w-[200px] rounded-xl border border-gray-200 bg-white shadow-lg"
+                          >
+                            <SelectItem
+                              value="work"
+                              className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
                             >
-                              <SelectTrigger
-                                className={`text-sm rounded-xl px-3 py-2 ${
-                                  !basicInfo.supervisor ? "border-amber-300 bg-amber-50" : "border-gray-300 bg-white"
+                              出勤日
+                            </SelectItem>
+                            <SelectItem
+                              value="off"
+                              className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
+                            >
+                              休み
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* 体温・体調（共通） */}
+                <Card
+                  className={`border-gray-200 ${
+                    healthChecks.some((i) => !i.checked) ? "ring-2 ring-amber-200" : ""
+                  }`}
+                >
+                  <CardHeader className="pb-3 bg-emerald-50 border-emerald-200">
+                    <CardTitle className="text-emerald-800 flex items-center gap-2 text-sm">
+                      <Heart className="w-4 h-4 text-emerald-600" />
+                      体温・体調チェック
+                      {!healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
+                        <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />
+                      )}
+                      {healthChecks.some((i) => !i.checked) &&
+                        healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
+                          <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />
+                        )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4 pt-4 pb-4">
+                    <div className="space-y-1">
+                      <span className="text-gray-900 text-sm">体温（℃）</span>
+                      <div className="flex items-center gap-3">
+                        <Input
+                          id="temperature"
+                          type="number"
+                          step="0.1"
+                          min="35.0"
+                          max="42.0"
+                          value={basicInfo.temperature}
+                          onChange={(e) => setBasicInfo({ ...basicInfo, temperature: e.target.value })}
+                          className={`w-24 text-sm rounded-xl ${
+                            parseFloat(basicInfo.temperature) >= 37.5
+                              ? "border-red-300 bg-red-50"
+                              : "border-gray-300"
+                          }`}
+                        />
+                        {parseFloat(basicInfo.temperature) >= 37.5 && (
+                          <Alert className="border-red-200 bg-red-50 flex-1 py-2 px-3">
+                            <AlertTriangle className="h-3 w-3 text-red-600" />
+                            <AlertDescription className="text-red-800 text-xs">
+                              発熱確認。責任者に報告し、作業中止してください。
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+                    </div>
+
+                    <Separator className="bg-gray-200" />
+
+                    <div className="space-y-3">
+                      {healthChecks.map((item) => (
+                        <div key={item.id} className="space-y-2">
+                          <div className="flex items-start space-x-2">
+                            <label
+                              htmlFor={item.id}
+                              className="flex items-center gap-3 cursor-pointer select-none"
+                            >
+                              <Checkbox
+                                id={item.id}
+                                checked={item.checked}
+                                onCheckedChange={(checked) =>
+                                  updateCheckItem(
+                                    healthChecks,
+                                    setHealthChecks,
+                                    item.id,
+                                    checked as boolean
+                                  )
+                                }
+                                className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
+                                  item.checked
+                                    ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                                    : ""
+                                }`}
+                              />
+                              <span
+                                className={`text-sm leading-4 ${
+                                  item.checked ? "text-gray-900" : "text-red-700 font-medium"
                                 }`}
                               >
-                                <SelectValue placeholder="確認者を選択" />
-                              </SelectTrigger>
-                              <SelectContent
-                                position="popper"
-                                sideOffset={6}
-                                className="z-[100] w-[240px] max-h-72 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg"
-                              >
-                                {employeesInOffice.map((e) => (
-                                  <SelectItem
-                                    key={e.code}
-                                    value={e.code}
-                                    className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium"
-                                  >
-                                    {e.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                                {item.label}
+                              </span>
+                            </label>
                           </div>
-                        )}
-                        {/* 勤務区分（ここでも変更可能） */}
-                        <div className="space-y-1">
-                          <span className="text-gray-900 text-sm">勤務区分</span>
-                          <Select value={workType} onValueChange={(v) => setWorkType(v as WorkType)}>
-                            <SelectTrigger className="text-sm rounded-xl px-3 py-2 border-gray-300 bg-white">
-                              <SelectValue placeholder="勤務区分" />
-                            </SelectTrigger>
-                            <SelectContent
-                              position="popper"
-                              sideOffset={6}
-                              className="z-[100] w-[200px] rounded-xl border border-gray-200 bg-white shadow-lg"
-                            >
-                              <SelectItem value="work" className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium">
-                                出勤日
-                              </SelectItem>
-                              <SelectItem value="off" className="cursor-pointer pr-10 data-[highlighted]:bg-blue-50 data-[highlighted]:text-blue-700 data-[state=checked]:font-medium">
-                                休み
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* 体温・体調（共通） */}
-                  <Card className={`border-gray-200 ${healthChecks.some((i) => !i.checked) ? "ring-2 ring-amber-200" : ""}`}>
-                    <CardHeader className="pb-3 bg-emerald-50 border-emerald-200">
-                      <CardTitle className="text-emerald-800 flex items-center gap-2 text-sm">
-                        <Heart className="w-4 h-4 text-emerald-600" />
-                        体温・体調チェック
-                        {!healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
-                          <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />
-                        )}
-                        {healthChecks.some((i) => !i.checked) &&
-                          healthChecks.some((i) => !i.checked && i.comment.trim() === "") && (
-                            <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />
-                          )}
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4 pt-4 pb-4">
-                      <div className="space-y-1">
-                        <span className="text-gray-900 text-sm">体温（℃）</span>
-                        <div className="flex items-center gap-3">
-                          <Input
-                            id="temperature"
-                            type="number"
-                            step="0.1"
-                            min="35.0"
-                            max="42.0"
-                            value={basicInfo.temperature}
-                            onChange={(e) => setBasicInfo({ ...basicInfo, temperature: e.target.value })}
-                            className={`w-24 text-sm rounded-xl ${
-                              parseFloat(basicInfo.temperature) >= 37.5 ? "border-red-300 bg-red-50" : "border-gray-300"
-                            }`}
-                          />
-                          {parseFloat(basicInfo.temperature) >= 37.5 && (
-                            <Alert className="border-red-200 bg-red-50 flex-1 py-2 px-3">
-                              <AlertTriangle className="h-3 w-3 text-red-600" />
-                              <AlertDescription className="text-red-800 text-xs">
-                                発熱確認。責任者に報告し、作業中止してください。
-                              </AlertDescription>
-                            </Alert>
+                          {item.requiresComment && (
+                            <div className="ml-5 space-y-1">
+                              <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
+                              <Textarea
+                                id={`${item.id}-comment`}
+                                placeholder="症状や状況の詳細を記入してください"
+                                value={item.comment}
+                                onChange={(e) =>
+                                  updateCheckItem(
+                                    healthChecks,
+                                    setHealthChecks,
+                                    item.id,
+                                    item.checked,
+                                    e.target.value
+                                  )
+                                }
+                                className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
+                                rows={2}
+                              />
+                            </div>
                           )}
                         </div>
-                      </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
 
-                      <Separator className="bg-gray-200" />
-
-                      <div className="space-y-3">
-                        {healthChecks.map((item) => (
-                          <div key={item.id} className="space-y-2">
-                            <div className="flex items-start space-x-2">
-                              <label htmlFor={item.id} className="flex items-center gap-3 cursor-pointer select-none">
-   <Checkbox
-     id={item.id}
-     checked={item.checked}
-     onCheckedChange={(checked) =>
-       updateCheckItem(healthChecks, setHealthChecks, item.id, checked as boolean)
-     }
-     className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
-       item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
-     }`}
-   />
-   <span className={`text-sm leading-4 ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
-     {item.label}
-   </span>
- </label>
- </div>
-
-                            {item.requiresComment && (
-                              <div className="ml-5 space-y-1">
-                                <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
-                                <Textarea
-                                  id={`${item.id}-comment`}
-                                  placeholder="症状や状況の詳細を記入してください"
-                                  value={item.comment}
-                                  onChange={(e) =>
-                                    updateCheckItem(healthChecks, setHealthChecks, item.id, item.checked, e.target.value)
-                                  }
-                                  className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
-                                  rows={2}
-                                />
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  {/* 以下は出勤日のみ表示（休みでは非表示） */}
-                  {workType === "work" && (
-                    <>
-                      <CompactCheckboxSection
-                        title="呼吸器症状"
-                        items={respiratoryChecks}
-                        setItems={setRespiratoryChecks}
-                        headerColor="blue"
-                        icon={Wind}
-                      />
-                      <CompactCheckboxSection
-                        title="手指・爪の状態"
-                        items={handHygieneChecks}
-                        setItems={setHandHygieneChecks}
-                        headerColor="orange"
-                        icon={Hand}
-                      />
-                      <CompactCheckboxSection
-                        title="服装チェック"
-                        items={uniformHygieneChecks}
-                        setItems={setUniformHygieneChecks}
-                        headerColor="purple"
-                        icon={Shirt}
-                      />
-                    </>
-                  )}
-                </div>
-
-                {/* 保存 */}
-                <div className="flex justify-center mt-8 pb-8">
-                  <Button disabled={saving} onClick={handleStep1Save} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl">
-                    <Save className="w-5 h-5" />
-                    {workType === "work" ? "出勤時チェックを保存" : "休日の体調チェックを保存"}
-                  </Button>
-                </div>
-              </>
-            )}
-
-            {/* Step 2（出勤日のみ） */}
-            {workType === "work" && currentStep === 2 && (
-              <div className="max-w-4xl mx-auto">
-                <div className="text-center text-3xl font-semibold mb-4">
-                  👤 {basicInfo.employee ? findEmpName(basicInfo.employee) : "従業員名未設定"}
-                </div>
-
-                <div className="mb-8">
-                  <CompactCheckboxSection
-                    title="作業後のチェック"
-                    items={postWorkChecks}
-                    setItems={setPostWorkChecks}
-                    headerColor="teal"
-                    icon={ClipboardCheck}
-                  />
-                </div>
-
-                <div className="flex justify-center gap-4 pb-8">
-                  <Button
-                    onClick={() => setCurrentStep(1)}
-                    variant="outline"
-                    className="border-gray-300 text-gray-700 hover:bg-gray-50 px-6 py-3 text-base rounded-xl gap-2"
-                  >
-                    <ChevronLeft className="w-5 h-5" />
-                    出勤時チェックへ
-                  </Button>
-                  <Button
-                    disabled={saving || !isCheckedIn}
-                    onClick={handleFinalSubmit}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
-                    title={!isCheckedIn ? "出勤チェックを完了すると有効になります" : undefined}
-                  >
-                    <Save className="w-5 h-5" />
-                    登録
-                  </Button>
-                </div>
+                {/* 以下は出勤日のみ表示（休みでは非表示） */}
+                {workType === "work" && (
+                  <>
+                    <CompactCheckboxSection
+                      title="呼吸器症状"
+                      items={respiratoryChecks}
+                      setItems={setRespiratoryChecks}
+                      headerColor="blue"
+                      icon={Wind}
+                    />
+                    <CompactCheckboxSection
+                      title="手指・爪の状態"
+                      items={handHygieneChecks}
+                      setItems={setHandHygieneChecks}
+                      headerColor="orange"
+                      icon={Hand}
+                    />
+                    <CompactCheckboxSection
+                      title="服装チェック"
+                      items={uniformHygieneChecks}
+                      setItems={setUniformHygieneChecks}
+                      headerColor="purple"
+                      icon={Shirt}
+                    />
+                  </>
+                )}
               </div>
-            )}
-          </div>
-        )
-      }
+
+              {/* 保存 */}
+              <div className="flex justify-center mt-8 pb-8">
+                <Button
+                  disabled={saving}
+                  onClick={handleStep1Save}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
+                >
+                  <Save className="w-5 h-5" />
+                  {workType === "work" ? "出勤時チェックを保存" : "休日の体調チェックを保存"}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {/* Step 2（出勤日のみ） */}
+          {workType === "work" && currentStep === 2 && (
+            <div className="max-w-4xl mx-auto">
+              <div className="text-center text-3xl font-semibold mb-4">
+                👤 {basicInfo.employee ? findEmpName(basicInfo.employee) : "従業員名未設定"}
+              </div>
+
+              <div className="mb-8">
+                <CompactCheckboxSection
+                  title="作業後のチェック"
+                  items={postWorkChecks}
+                  setItems={setPostWorkChecks}
+                  headerColor="teal"
+                  icon={ClipboardCheck}
+                />
+              </div>
+
+              <div className="flex justify-center gap-4 pb-8">
+                <Button
+                  onClick={() => setCurrentStep(1)}
+                  variant="outline"
+                  className="border-gray-300 text-gray-700 hover:bg-gray-50 px-6 py-3 text-base rounded-xl gap-2"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                  出勤時チェックへ
+                </Button>
+                <Button
+                  disabled={saving || !isCheckedIn}
+                  onClick={handleFinalSubmit}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
+                  title={!isCheckedIn ? "出勤チェックを完了すると有効になります" : undefined}
+                >
+                  <Save className="w-5 h-5" />
+                  登録
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -1068,12 +1134,20 @@ const handleOpenChange = (open: boolean) => {
                   <Checkbox
                     id={item.id}
                     checked={item.checked}
-                    onCheckedChange={(checked) => updateCheckItem(items, setItems, item.id, checked as boolean)}
+                    onCheckedChange={(checked) =>
+                      updateCheckItem(items, setItems, item.id, checked as boolean)
+                    }
                     className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
-                      item.checked ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600" : ""
+                      item.checked
+                        ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                        : ""
                     }`}
                   />
-                  <span className={`text-sm leading-4 ${item.checked ? "text-gray-900" : "text-red-700 font-medium"}`}>
+                  <span
+                    className={`text-sm leading-4 ${
+                      item.checked ? "text-gray-900" : "text-red-700 font-medium"
+                    }`}
+                  >
                     {item.label}
                   </span>
                 </label>
@@ -1086,7 +1160,9 @@ const handleOpenChange = (open: boolean) => {
                     id={`${item.id}-comment`}
                     placeholder="症状や状況の詳細を記入してください"
                     value={item.comment}
-                    onChange={(e) => updateCheckItem(items, setItems, item.id, item.checked, e.target.value)}
+                    onChange={(e) =>
+                      updateCheckItem(items, setItems, item.id, item.checked, e.target.value)
+                    }
                     className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
                     rows={2}
                   />

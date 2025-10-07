@@ -47,6 +47,7 @@ const statusBadge = (s: HygieneRecordRow['status']) => {
     出勤入力済: 'bg-blue-50 text-blue-700 border border-blue-200',
     退勤入力済: 'bg-green-50 text-green-700 border border-green-200',
     未入力: 'bg-slate-50 text-slate-700 border border-slate-200',
+    休み:  'bg-purple-50 text-purple-700 border border-purple-200',
   }
   return <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 ${map[s]}`}>{s}</Badge>
 }

@@ -37,7 +37,7 @@ export type HygieneRecordRow = {
   officeName: string;
   employeeName: string;
   date: string; // "YYYY-MM-DD"
-  status: "出勤入力済" | "退勤入力済" | "未入力";
+  status: "出勤入力済" | "退勤入力済" | "未入力"| "休み";
   supervisorConfirmed: boolean;
   abnormalItems: string[];
   hasAnyComment: boolean;
@@ -161,12 +161,23 @@ function normalizeRow(x: any): NormalizedRow {
     ? abnormalSrc.map((s: any) => toStr(s)).filter(Boolean)
     : [];
 
-  let status: HygieneRecordRow["status"] = (x?.status_jp ?? x?.status) as any;
-  if (!status) {
-    if (x?.clock_out || x?.checked_out || x?.work_end_time) status = "退勤入力済";
-    else if (x?.clock_in || x?.checked_in || x?.work_start_time) status = "出勤入力済";
-    else status = "未入力";
-  }
+// ---- ここから置き換え ----
+const rawStatusStr = toStr(x?.status_jp ?? x?.status ?? "").trim();
+const isOffFlag =
+  Boolean(x?.is_off ?? x?.day_off ?? x?.is_day_off) ||
+  /off|休(み|暇|業)/i.test(toStr(x?.work_type ?? rawStatusStr));
+
+let status: HygieneRecordRow["status"];
+if (isOffFlag || /休/i.test(rawStatusStr) || /off/i.test(rawStatusStr)) {
+  status = "休み";
+} else if (x?.clock_out || x?.checked_out || x?.work_end_time) {
+  status = "退勤入力済";
+} else if (x?.clock_in || x?.checked_in || x?.work_start_time) {
+  status = "出勤入力済";
+} else {
+  status = "未入力";
+}
+// ---- 置き換えここまで ----
 
   const hasAnyComment = Boolean(
     x?.hasAnyComment ?? x?.has_comment ?? x?.has_any_comment ?? (x?.comment_count ?? 0) > 0
@@ -657,9 +668,8 @@ export function canConfirmRow(opts: {
 }): boolean {
   const { role, row, userOffice, fallbackOffice } = opts;
 
-  // 退勤入力済み以外は不可
-  if (row.status !== "退勤入力済") return false;
-
+  // 退勤入力済み、休み以外は不可
+  if (!(row.status === "退勤入力済" || row.status === "休み")) return false;
   // 本社は全件OK
   if (role === "hq_admin") return true;
 

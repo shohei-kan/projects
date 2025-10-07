@@ -66,7 +66,8 @@ function loadLS<T>(key: string, fallback: T): T {
 /* =========================
  * 画面表示用の型
  * ========================= */
-export type StatusJP = "出勤入力済" | "退勤入力済" | "未入力";
+// ★ 型を拡張して将来の「休み」「-」も許容
+export type StatusJP = "出勤入力済" | "退勤入力済" | "未入力" | "休み" | "-";
 
 export type HygieneRecordRow = {
   /** 1日×従業員で一意（ `${date}-${employeeCode}` ） */
@@ -231,7 +232,7 @@ export function getMonthRows(employeeName: string, monthBaseISO = TODAY_STR): Hy
       } as HygieneRecordRow;
     }
 
-    const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === iso);
+    const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === iso) ?? null;
     if (!rec) {
       return {
         id: `${iso}-${emp.code}`,
@@ -375,6 +376,15 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
     return [];
   }
 }
+export type TodayRecord = {
+  work_start_time?: string | null;
+  work_end_time?: string | null;
+  status?: string;       // "休み" など
+  status_jp?: string;    // 日本語ステータス
+  is_off?: boolean;
+  day_off?: boolean;
+  work_type?: string;    // "off" / "work" など
+};
 
 /** 当日のレコードと明細を取得（フォームの自動反映用） */
 export async function getTodayRecordWithItems(
@@ -475,6 +485,12 @@ export type DashboardStaffRow = {
   temperature: number | null;
   symptoms: boolean;
   comment: string;
+
+  // ★ 追加：休み表示のためのゆるい状態
+  status?: string;                 // 例: 'off' | 'work' | 'arrived' など
+  status_jp?: string;              // 例: '休み' | '出勤入力済' | '退勤入力済' | '-'
+  is_off?: boolean;                // true なら休み
+  work_type?: 'off' | 'work';
 };
 
 // 営業所コード→営業所名
@@ -483,83 +499,212 @@ export function getBranchNameByCode(code?: string | null): string {
   return mockBranches.find((b) => b.code === code)?.name ?? "営業所未設定";
 }
 
-// ダッシュボード1日の一覧
+// 比較用の正規化（全角・空白・記号差を吸収）
+const normName = (s: any) => String(s ?? "").replace(/\u3000/g, "").replace(/\s+/g, "").toLowerCase();
+const normCode = (s: any) => String(s ?? "").replace(/[\s\-_.]/g, "").toUpperCase();
+
+// 営業所一致のゆるい判定（コード or 名称のどちらでも一致を許す）
+const officeMatch = (rowOffice: any, wanted: string) => {
+  if (!rowOffice || !wanted) return false;
+  return normCode(rowOffice) === normCode(wanted) || normName(rowOffice) === normName(wanted);
+};
+
+// ★ 追加：APIレスポンス行から office 情報（コード or 名称）を安全に取り出す
+const getOfficeKeyFromApiRow = (row: any): string => {
+  const code =
+    row?.office_code ??
+    row?.branch_code ??
+    row?.office?.code ??
+    row?.office?.id;
+  const name =
+    row?.office_name ??
+    row?.branch_name ??
+    row?.office?.name ??
+    row?.branch?.name;
+  return String(code ?? name ?? "");
+};
+
+// === 補助: 営業所の従業員コード集合を取得（APIの表記ゆれにも対応） ===
+// ※ 現時点では未使用。使う場合はコメントアウトを外す。
+// async function fetchEmployeeCodesInOffice(officeCode: string): Promise<Set<string>> {
+//   const tryPaths = [
+//     `/employees?office_code=${encodeURIComponent(officeCode)}`,
+//     `/employees?branch_code=${encodeURIComponent(officeCode)}`,
+//     `/employees?office=${encodeURIComponent(officeCode)}`,
+//   ];
+//   for (const path of tryPaths) {
+//     try {
+//       const r: any = await apiGet<any>(path);
+//       const list: any[] = Array.isArray(r)
+//         ? r
+//         : Array.isArray(r?.results) ? r.results
+//         : Array.isArray(r?.employees) ? r.employees
+//         : Array.isArray(r?.data) ? r.data
+//         : [];
+//       if (list.length) {
+//         const codes = list
+//           .map((e) => String(e?.code ?? e?.employee_code ?? e?.id ?? ""))
+//           .filter(Boolean);
+//         return new Set(codes);
+//       }
+//     } catch { /* 次のパスへ */ }
+//   }
+//   return new Set<string>();
+// }
+
+// === 補助: ダッシュボード一覧を取得（APIの引数名ゆれ吸収） ===
+async function fetchDashboardRowsRaw(officeCode: string, dateISO: string) {
+  const tryPaths = [
+    `/dashboard?office_code=${encodeURIComponent(officeCode)}&date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?branch_code=${encodeURIComponent(officeCode)}&date=${encodeURIComponent(dateISO)}`,
+  ];
+  for (const path of tryPaths) {
+    try {
+      const r: any = await apiGet<any>(path);
+      const rows = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
+      if (rows.length) return rows;
+    } catch { /* 次 */ }
+  }
+  return [] as any[];
+}
+
+
+// ダッシュボード行生成（API版・office_name/ID対応版）
 export async function getDashboardStaffRows(branchCode: string, dateISO: string): Promise<DashboardStaffRow[]> {
+  // ====== 共通ヘルパー ======
+  const normCode = (s: any) => String(s ?? "").replace(/[\s\-_.]/g, "").toUpperCase();
+  const normName = (s: any) => String(s ?? "").replace(/\u3000/g, "").replace(/\s+/g, "").toLowerCase();
+
+  const expectedOfficeName = branchCodeToOfficeName.get(branchCode) ?? "";
+
+  const isOff = (rec: any): boolean => {
+    if (!rec) return false;
+    if (rec.status === "off" || rec.status_jp === "休み") return true;
+    if (rec.is_off === true || rec.day_off === true) return true;
+    if (String(rec.work_type ?? "").toLowerCase() === "off") return true;
+    const its = rec.items ?? rec.record_items ?? [];
+    if (its.find((i: any) => i.category === "work_type" && String(i.value).toLowerCase() === "off")) return true;
+    if (!rec.work_start_time && !rec.work_end_time && its.length > 0) return true;
+    return false;
+  };
+
+  // ====== ローカルモード ======
   if (!USE_API) {
     const emps = mockEmployees.filter((e) => e.branchCode === branchCode);
-
     const recs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []).filter((r) => r.date === dateISO);
     const items = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
-
     const byEmp = new Map(recs.map((r) => [r.employeeCode, r]));
+
     return emps.map((emp) => {
-      // ① LSにあればそれを優先
       const lr = byEmp.get(emp.code);
-      if (lr) {
-        const its = items.filter((i) => i.recordId === lr.id);
-        const temperatureRaw = its.find((i) => i.category === "temperature")?.value;
-        const temperature =
-          temperatureRaw !== undefined && temperatureRaw !== null && temperatureRaw !== ""
-            ? Number(temperatureRaw)
-            : null;
-        const symptoms = its.some(
-          (i) =>
-            i.is_normal === false &&
-            ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
-        );
-        const comment = its.find((i) => i.is_normal === false && (i.value ?? "").trim().length > 0)?.value ?? "";
-
-        return {
-          id: emp.code,
-          name: emp.name,
-          arrivalRegistered: !!lr.work_start_time,
-          departureRegistered: !!lr.work_end_time,
-          temperature,
-          symptoms,
-          comment,
-        };
-      }
-
-      // ② 無ければモックにフォールバック
-      const rec = mockRecords.find((r) => r.employeeCode === emp.code && r.date === dateISO);
-      const its2 = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
-      const temperatureRaw = its2.find((i) => i.category === "temperature")?.value;
-      const temperature =
-        temperatureRaw !== undefined && temperatureRaw !== null ? Number(temperatureRaw) : null;
-      const symptoms = its2.some(
+      const its = lr ? items.filter((i) => i.recordId === lr.id) : [];
+      const temperatureRaw = its.find((i) => i.category === "temperature")?.value;
+      const temperature = temperatureRaw ? Number(temperatureRaw) : null;
+      const symptoms = its.some(
         (i) =>
           i.is_normal === false &&
           ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
       );
-      const comment = its2.find((i) => i.value && i.is_normal === false)?.value ?? "";
+      const comment = its.find((i) => i.is_normal === false && i.value)?.value ?? "";
+      const hasStart = !!lr?.work_start_time;
+      const hasEnd = !!lr?.work_end_time;
+      const off = isOff(lr);
+      let status_jp: string | undefined = undefined;
+      if (off) status_jp = "休み";
+      else if (hasStart && hasEnd) status_jp = "退勤入力済";
+      else if (hasStart) status_jp = "出勤入力済";
 
       return {
         id: emp.code,
         name: emp.name,
-        arrivalRegistered: !!rec?.work_start_time,
-        departureRegistered: !!rec?.work_end_time,
+        arrivalRegistered: hasStart,
+        departureRegistered: hasEnd,
         temperature,
         symptoms,
         comment,
-      };
+        is_off: off,
+        status_jp,
+        work_type: off ? "off" : "work",
+      } as DashboardStaffRow;
     });
   }
 
-  // API: /dashboard?branch_code=...&date=...
-  type ApiRow = {
-    id: string;
-    name: string;
-    arrivalRegistered: boolean;
-    departureRegistered: boolean;
-    temperature: number | null;
-    symptoms: boolean;
-    comment: string;
-  };
-  const data = await apiGet<{ rows: ApiRow[] }>(
-    `/dashboard?branch_code=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(dateISO)}`
+  // ====== APIモード ======
+
+  // --- 1) 従業員一覧 ---
+  const empRes = await apiGet<any>(`/employees?office_code=${encodeURIComponent(branchCode)}`).catch(() => null);
+  const empRaw: any[] = Array.isArray(empRes?.results) ? empRes.results : Array.isArray(empRes) ? empRes : [];
+
+  const fallbackCodes = new Set(
+    mockEmployees.filter((e) => e.branchCode === branchCode).map((e) => String(e.code))
   );
-  return data.rows;
+
+  const employees = empRaw
+    .filter((e) => {
+      const officeField = String(e?.office_code ?? e?.branch_code ?? e?.office ?? "");
+      const officeNameField = String(e?.office_name ?? e?.branch_name ?? "");
+      const byCode = normCode(officeField) === normCode(branchCode);
+      const byName = expectedOfficeName
+        ? normName(officeNameField) === normName(expectedOfficeName)
+        : false;
+      const byFallback = fallbackCodes.has(String(e?.code ?? e?.employee_code ?? e?.id ?? ""));
+      return byCode || byName || byFallback;
+    })
+    .map((e) => ({
+      id: Number(e.id),
+      code: String(e?.code ?? ""),
+      name: String(e?.name ?? ""),
+      office_name: String(e?.office_name ?? ""),
+    }));
+
+  // --- 2) 当日のレコード ---
+  const recRes = await apiGet<any>(
+    `/records/?office_code=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(dateISO)}`
+  ).catch(() => null);
+  const recRaw: any[] = Array.isArray(recRes?.results) ? recRes.results : Array.isArray(recRes) ? recRes : [];
+
+  // --- 3) record.employee（数値ID）をキーに索引化 ---
+  const recById = new Map<number, any>();
+  for (const r of recRaw) {
+    const id = Number(r?.employee);
+    if (!isNaN(id)) recById.set(id, r);
+  }
+
+  // --- 4) 行生成 ---
+  return employees.map((e) => {
+    const rec = recById.get(e.id) ?? null;
+    const items: any[] = rec ? rec.items ?? rec.record_items ?? [] : [];
+    const tRaw = items.find((i: any) => i.category === "temperature")?.value;
+    const temperature = tRaw != null && `${tRaw}` !== "" ? Number(tRaw) : null;
+    const symptoms = items.some(
+      (i: any) =>
+        i.is_normal === false &&
+        ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
+    );
+    const comment = items.find((i: any) => i.is_normal === false && (i.comment || i.value))?.comment ?? "";
+    const hasStart = !!rec?.work_start_time;
+    const hasEnd = !!rec?.work_end_time;
+    const off = isOff(rec);
+    let status_jp: string | undefined = undefined;
+    if (off) status_jp = "休み";
+    else if (hasStart && hasEnd) status_jp = "退勤入力済";
+    else if (hasStart) status_jp = "出勤入力済";
+
+    return {
+      id: e.code,
+      name: e.name,
+      arrivalRegistered: hasStart,
+      departureRegistered: hasEnd,
+      temperature,
+      symptoms,
+      comment,
+      is_off: off,
+      status_jp,
+      work_type: off ? "off" : "work",
+    } as DashboardStaffRow;
+  });
 }
+
 
 /* --------------------------------
  * 管理画面：詳細取得（ラベル付き）

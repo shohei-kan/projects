@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 // Icons
-import { CheckCircle, Clock, Home, HelpCircle, Settings, LogOut, Edit } from "lucide-react";
+import { CheckCircle, Clock, Home, Moon, HelpCircle, Settings, LogOut, Edit } from "lucide-react";
 
 // Adapter（ここだけ差し替えればAPI対応に移行できます）
 import {
@@ -64,7 +64,18 @@ const COOLDOWN_MINUTES = 5;
 /* ---------- component ---------- */
 export default function HygieneDashboard() {
   const navigate = useNavigate();
-  const today = new Date(TODAY_STR);
+
+  // 「休み」かどうか（アダプタがどの形で返しても拾えるよう幅広く判定）
+  const isDayOff = (r: DashboardStaffRow) => {
+    const v: any = r as any;
+    return (
+      v.status === "休み" ||
+      v.status_jp === "休み" ||
+      v.isOff === true ||
+      v.is_off === true ||
+v.day_off === true ||
+  String(v.work_type ?? "").toLowerCase() === "off"    );
+  };
 
   // session
   const [session, setSession] = useState<SessionPayload | null>(() => loadSession());
@@ -105,7 +116,7 @@ export default function HygieneDashboard() {
       try {
         setLoading(true);
         setLoadError(null);
-        const rows = await getDashboardStaffRows(branchCode,TODAY_STR);
+        const rows = await getDashboardStaffRows(branchCode, TODAY_STR);
         if (!aborted) setStaffRecords(rows);
       } catch {
         if (!aborted) setLoadError("一覧の取得に失敗しました");
@@ -119,13 +130,19 @@ export default function HygieneDashboard() {
   }, [branchCode]);
 
   const getStatusIcon = (r: DashboardStaffRow) => {
+    if (isDayOff(r)) return <Moon className="w-3 h-3 text-purple-600" />;
     if (r.arrivalRegistered && r.departureRegistered) return <CheckCircle className="w-3 h-3 text-green-600" />;
     if (r.arrivalRegistered) return <Clock className="w-3 h-3 text-yellow-600" />;
-    return null;
+    return <Clock className="w-3 h-3 text-gray-400" />; // ← 未入力も高さを安定させる
   };
+
   const getStatusText = (r: DashboardStaffRow) => {
-    if (r.arrivalRegistered && r.departureRegistered) return "退勤入力済";
-    if (r.arrivalRegistered) return "出勤入力済";
+if (typeof r.status_jp === "string" && r.status_jp.trim() !== "" && r.status_jp !== "-") {
+        return r.status_jp;              // "休み" / "出勤入力済" / "退勤入力済" / "-" など
+    }
+    if (r.is_off === true || (r.work_type && r.work_type.toLowerCase() === "off")) return "休み";
+    if (!!r.arrivalRegistered && !!r.departureRegistered) return "退勤入力済";
+    if (!!r.arrivalRegistered) return "出勤入力済";
     return "-";
   };
 
@@ -289,7 +306,9 @@ export default function HygieneDashboard() {
                           {getStatusIcon(r)}
                           <span
                             className={`text-xs ${
-                              r.arrivalRegistered && r.departureRegistered
+                              isDayOff(r)
+                                ? "text-purple-600"
+                                : r.arrivalRegistered && r.departureRegistered
                                 ? "text-green-600"
                                 : r.arrivalRegistered
                                 ? "text-yellow-600"
