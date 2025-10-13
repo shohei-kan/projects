@@ -454,55 +454,60 @@ export default function DailyHygieneCheckForm() {
     }
 
     // 送信用アイテム（API仕様に合わせて comment を送る）
-    const items: {
-      category: string;
-      is_normal: boolean;
-      value?: number | string | null;
-      comment?: string | null;
-    }[] = [{ category: "temperature", is_normal: true, value: Number(basicInfo.temperature) }];
+const items: {
+    category: string;
+    is_normal: boolean;
+    value?: number | string | null;
+    comment?: string | null;
+  }[] = [{ category: "temperature", is_normal: true, value: Number(basicInfo.temperature) }];
 
-    const pushFrom = (arr: CheckItem[]) => {
-      arr.forEach((c) =>
-        items.push({
-          category: c.id,
-          is_normal: c.checked,
-          comment: c.comment || null,
-        })
-      );
-    };
-    pushFrom(healthChecks);
-    if (workType === "work") {
-      pushFrom(respiratoryChecks);
-      pushFrom(handHygieneChecks);
-      pushFrom(uniformHygieneChecks);
-    }
-
-    const payload = {
-      employeeCode: basicInfo.employee,
-      dateISO: basicInfo.date,
-      workStartTime: workType === "work" ? "08:30" : null, // 必要に応じてUI化
-      workEndTime: null,
-      items,
-      supervisorCode: basicInfo.supervisor || null,
-    } as const;
-
-    try {
-      setSaving(true);
-      setErrorMsg(null);
-      console.info("[form->submit] step1 payload", payload);
-      await submitDailyForm(payload);
-      console.info("[form->submit] step1 OK");
-      alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
-      navigate("/dashboard");
-    } catch (err) {
-      const msg = (err as Error).message;
-      console.error("[form->submit] step1 NG", err);
-      setErrorMsg(msg);
-      alert("保存に失敗しました: " + msg);
-    } finally {
-      setSaving(false);
-    }
+  // ★ 再追加：セクション配列を items に詰める小ヘルパー
+  const pushFrom = (arr: CheckItem[]) => {
+    arr.forEach((c) =>
+      items.push({
+        category: c.id,
+        is_normal: c.checked,
+        comment: c.comment || null,
+      })
+    );
   };
+
+  // 既存チェック群を追加
+  pushFrom(healthChecks);
+  if (workType === "work") {
+    pushFrom(respiratoryChecks);
+    pushFrom(handHygieneChecks);
+    pushFrom(uniformHygieneChecks);
+  }
+
+  // ★ 休日なら勤務区分をアイテムとして送る（サーバが休み判定できるように）
+  if (workType === "off") {
+    items.push({ category: "work_type", is_normal: true, value: "off" });
+  }
+
+  const payload = {
+    employeeCode: basicInfo.employee,
+    dateISO: basicInfo.date,
+    workStartTime: workType === "work" ? "08:30" : null,
+    workEndTime: null,
+    items,
+    supervisorCode: basicInfo.supervisor || null,
+  } as const;
+
+  try {
+    setSaving(true);
+    setErrorMsg(null);
+    await submitDailyForm(payload);
+    alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
+    navigate("/dashboard");
+  } catch (err) {
+    const msg = (err as Error).message;
+    setErrorMsg(msg);
+    alert("保存に失敗しました: " + msg);
+  } finally {
+    setSaving(false);
+  }
+};
 
   const handleFinalSubmit = async () => {
     const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");

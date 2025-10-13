@@ -15,16 +15,25 @@ if (typeof window !== "undefined") {
 /* =========================
  * 共通: APIユーティリティ
  * ========================= */
-// 置き換え：API_BASE → API_ROOT + join
 const API_ROOT = String(import.meta.env.VITE_API_BASE ?? "/api").replace(/\/+$/, "");
 const USE_API = (import.meta.env.VITE_USE_API ?? "1") === "1";
+const CREDENTIALS: RequestCredentials =
+  (import.meta.env.VITE_USE_CREDENTIALS ?? "0") === "1" ? "include" : "omit";
 
 const join = (p: string) => `${API_ROOT}${p.startsWith("/") ? p : `/${p}`}`;
 
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(join(path), { headers: { Accept: "application/json" } });
+// 置き換え
+async function apiGet<T>(path: string, opts?: { quiet?: boolean }): Promise<T> {
+  const url = join(path);
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    credentials: CREDENTIALS,
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
+    if (!opts?.quiet) {
+      console.warn("[/api error]", url, res.status, body);
+    }
     throw new Error(`${path} GET failed (${res.status}): ${body || res.statusText}`);
   }
   return (await res.json()) as T;
@@ -66,12 +75,10 @@ function loadLS<T>(key: string, fallback: T): T {
 /* =========================
  * 画面表示用の型
  * ========================= */
-// ★ 型を拡張して将来の「休み」「-」も許容
 export type StatusJP = "出勤入力済" | "退勤入力済" | "未入力" | "休み" | "-";
 
 export type HygieneRecordRow = {
-  /** 1日×従業員で一意（ `${date}-${employeeCode}` ） */
-  id: string;
+  id: string; // `${date}-${employeeCode}`
   employeeCode: string;
   employeeName: string;
   officeName: string;
@@ -85,7 +92,7 @@ export type HygieneRecordRow = {
 export type UserRole = "hq_admin" | "branch_manager";
 
 /* --------------------------------
- * オフィス名⇔コード、従業員検索のマップ（モック名簿基準）
+ * オフィス名⇔コード、従業員検索（モック）
  * -------------------------------- */
 const officeNameToCodes = (() => {
   const m = new Map<string, string[]>();
@@ -124,7 +131,7 @@ const dayListOfCurrentMonth = (refISO: string) => {
   return list;
 };
 
-// これに差し替え
+// 互換：モック保存分の簡易ステータス
 const statusFromRecord = (
   rec: { work_start_time?: string | null; work_end_time?: string | null } | null | undefined
 ): StatusJP => {
@@ -135,15 +142,12 @@ const statusFromRecord = (
 };
 
 /* --------------------------------
- * 表データ（ローカル優先で構築）
+ * 表データ（ローカル優先で構築・モック用）
  * -------------------------------- */
-
-/** 日次（営業所内の全従業員） */
 export function getDailyRows(officeName: string, dateISO: string): HygieneRecordRow[] {
   const codes = officeNameToCodes.get(officeName) ?? [];
   const emps = mockEmployees.filter((e) => codes.includes(e.branchCode));
 
-  // LSを読んで当日分をマップ化
   const lsRecs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []).filter((r) => r.date === dateISO);
   const lsItems = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
   const lsByEmp = new Map(lsRecs.map((r) => [r.employeeCode, r]));
@@ -167,7 +171,6 @@ export function getDailyRows(officeName: string, dateISO: string): HygieneRecord
       };
     }
 
-    // LSが無いときはモックで埋める（後方互換）
     const rec = mockRecords.find((r) => r.employeeCode === e.code && r.date === dateISO);
     if (!rec) {
       return {
@@ -265,7 +268,6 @@ export function getMonthRows(employeeName: string, monthBaseISO = TODAY_STR): Hy
     } as HygieneRecordRow;
   });
 
-  // 新しい日付が上に
   return rows.reverse();
 }
 
@@ -313,7 +315,6 @@ export type RecordItemRow = (typeof mockRecordItems)[number];
 export async function getEmployeesByBranch(branchCode: string): Promise<EmployeeRow[]> {
   const useApi = (import.meta.env.VITE_USE_API ?? "1") === "1";
 
-  // 正規化ヘルパ
   const normalizeCode = (s: string | undefined | null) =>
     (s ?? "").trim().replace(/[\u3000\s-]/g, "").toUpperCase();
   const normalizeName = (s: string | undefined | null) =>
@@ -321,20 +322,16 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
 
   const bc = normalizeCode(branchCode);
 
-  // スナップショット/モックを読む
   const readSnapshot = (): EmployeeRow[] => {
     const raw = localStorage.getItem("employees.snapshot.v1");
     return raw ? (JSON.parse(raw) as EmployeeRow[]) : (mockEmployees as EmployeeRow[]);
   };
 
-  // ===== APIを使わない（推奨の開発モード） =====
   if (!useApi) {
     const src = readSnapshot();
 
-    // 1) ブランチコード一致（正規化比較）
     let list = src.filter((e: any) => normalizeCode((e as any).branchCode) === bc);
 
-    // 2) 0件なら、引数が「営業所名」だった可能性を考慮（完全一致/空白無視）
     if (list.length === 0) {
       const byName = mockBranches.find(
         (b) =>
@@ -347,7 +344,6 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
       }
     }
 
-    // 3) まだ0件なら、本当に該当なし → 混入防止のため **空配列** を返す
     if (list.length === 0) {
       console.warn(
         "[employees] 該当ブランチなし:",
@@ -358,7 +354,6 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
     return list as EmployeeRow[];
   }
 
-  // ===== APIモード：失敗/0件なら「厳格に空配列返す」（混入防止） =====
   try {
     const apiEmps = await apiGet<
       Array<{ id: number; code: string; name: string; office: number; office_name: string }>
@@ -376,14 +371,15 @@ export async function getEmployeesByBranch(branchCode: string): Promise<Employee
     return [];
   }
 }
+
 export type TodayRecord = {
   work_start_time?: string | null;
   work_end_time?: string | null;
-  status?: string;       // "休み" など
-  status_jp?: string;    // 日本語ステータス
+  status?: string;
+  status_jp?: string;
   is_off?: boolean;
   day_off?: boolean;
-  work_type?: string;    // "off" / "work" など
+  work_type?: string;
 };
 
 /** 当日のレコードと明細を取得（フォームの自動反映用） */
@@ -418,18 +414,14 @@ export async function getTodayRecordWithItems(
             comment: it.value ?? null,
           }) as unknown as RecordItemRow
       );
-
-      // モック時は supervisor を保持していないので null を返す
       return { record, items: rows, supervisorCode: null };
     }
 
-    // モックのフォールバック
     const rec = mockRecords.find((x) => x.employeeCode === employeeCode && x.date === dateISO) ?? null;
     const its2 = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
     return { record: rec as unknown as RecordRow, items: its2 as unknown as RecordItemRow[], supervisorCode: null };
   }
 
-  // ===== API モード =====
   type ApiItem = { id: number; category: string; is_normal: boolean; value: number | string | null; comment: string };
   type ApiRecord = {
     id: number;
@@ -438,7 +430,7 @@ export async function getTodayRecordWithItems(
     work_start_time: string | null;
     work_end_time: string | null;
     items: ApiItem[];
-    supervisor_code?: string | null;   // ★ サーバが返す
+    supervisor_code?: string | null;
   };
 
   const list = await apiGet<ApiRecord[]>(
@@ -470,7 +462,6 @@ export async function getTodayRecordWithItems(
       ) as unknown as RecordItemRow[])
     : [];
 
-  // ★ ここで supervisorCode を返す（文字列 or null）
   return { record, items, supervisorCode: rec?.supervisor_code ?? null };
 }
 
@@ -485,31 +476,26 @@ export type DashboardStaffRow = {
   temperature: number | null;
   symptoms: boolean;
   comment: string;
-
-  // ★ 追加：休み表示のためのゆるい状態
-  status?: string;                 // 例: 'off' | 'work' | 'arrived' など
-  status_jp?: string;              // 例: '休み' | '出勤入力済' | '退勤入力済' | '-'
-  is_off?: boolean;                // true なら休み
-  work_type?: 'off' | 'work';
+  status?: string;
+  status_jp?: string;
+  is_off?: boolean;
+  work_type?: "off" | "work";
 };
 
-// 営業所コード→営業所名
+// 営業所コード→営業所名（モック）
 export function getBranchNameByCode(code?: string | null): string {
   if (!code) return "営業所未設定";
   return mockBranches.find((b) => b.code === code)?.name ?? "営業所未設定";
 }
 
-// 比較用の正規化（全角・空白・記号差を吸収）
 const normName = (s: any) => String(s ?? "").replace(/\u3000/g, "").replace(/\s+/g, "").toLowerCase();
 const normCode = (s: any) => String(s ?? "").replace(/[\s\-_.]/g, "").toUpperCase();
 
-// 営業所一致のゆるい判定（コード or 名称のどちらでも一致を許す）
 const officeMatch = (rowOffice: any, wanted: string) => {
   if (!rowOffice || !wanted) return false;
   return normCode(rowOffice) === normCode(wanted) || normName(rowOffice) === normName(wanted);
 };
 
-// ★ 追加：APIレスポンス行から office 情報（コード or 名称）を安全に取り出す
 const getOfficeKeyFromApiRow = (row: any): string => {
   const code =
     row?.office_code ??
@@ -524,188 +510,109 @@ const getOfficeKeyFromApiRow = (row: any): string => {
   return String(code ?? name ?? "");
 };
 
-// === 補助: 営業所の従業員コード集合を取得（APIの表記ゆれにも対応） ===
-// ※ 現時点では未使用。使う場合はコメントアウトを外す。
-// async function fetchEmployeeCodesInOffice(officeCode: string): Promise<Set<string>> {
-//   const tryPaths = [
-//     `/employees?office_code=${encodeURIComponent(officeCode)}`,
-//     `/employees?branch_code=${encodeURIComponent(officeCode)}`,
-//     `/employees?office=${encodeURIComponent(officeCode)}`,
-//   ];
-//   for (const path of tryPaths) {
-//     try {
-//       const r: any = await apiGet<any>(path);
-//       const list: any[] = Array.isArray(r)
-//         ? r
-//         : Array.isArray(r?.results) ? r.results
-//         : Array.isArray(r?.employees) ? r.employees
-//         : Array.isArray(r?.data) ? r.data
-//         : [];
-//       if (list.length) {
-//         const codes = list
-//           .map((e) => String(e?.code ?? e?.employee_code ?? e?.id ?? ""))
-//           .filter(Boolean);
-//         return new Set(codes);
-//       }
-//     } catch { /* 次のパスへ */ }
-//   }
-//   return new Set<string>();
-// }
-
-// === 補助: ダッシュボード一覧を取得（APIの引数名ゆれ吸収） ===
+// 置き換え：fetchDashboardRowsRaw
 async function fetchDashboardRowsRaw(officeCode: string, dateISO: string) {
-  const tryPaths = [
-    `/dashboard?office_code=${encodeURIComponent(officeCode)}&date=${encodeURIComponent(dateISO)}`,
+  const officeName = branchCodeToOfficeName.get(officeCode) ?? officeCode;
+  const ym = dateISO.slice(0, 7); // YYYY-MM
+
+  // ★ サーバ仕様に合わせて最優先で正解形を先頭に
+  const paths = [
     `/dashboard?branch_code=${encodeURIComponent(officeCode)}&date=${encodeURIComponent(dateISO)}`,
+
+    // 以下は保険（実装差異に備えたフォールバック）
+    `/dashboard?office_code=${encodeURIComponent(officeCode)}&date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?office=${encodeURIComponent(officeCode)}&date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?office_name=${encodeURIComponent(officeName)}&date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?branch_name=${encodeURIComponent(officeName)}&date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?office_code=${encodeURIComponent(officeCode)}&ymd=${encodeURIComponent(dateISO)}`,
+    `/dashboard?office_code=${encodeURIComponent(officeCode)}&record_date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?office_name=${encodeURIComponent(officeName)}&ymd=${encodeURIComponent(dateISO)}`,
+    `/dashboard?office_name=${encodeURIComponent(officeName)}&record_date=${encodeURIComponent(dateISO)}`,
+    `/dashboard?branch_code=${encodeURIComponent(officeCode)}&month=${encodeURIComponent(ym)}`,
+    `/dashboard?office_name=${encodeURIComponent(officeName)}&month=${encodeURIComponent(ym)}`,
   ];
-  for (const path of tryPaths) {
+
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
     try {
-      const r: any = await apiGet<any>(path);
+      // 先頭（正解形）以外は quiet でノイズ抑制
+      const r: any = await apiGet<any>(path, { quiet: i > 0 });
       const rows = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
       if (rows.length) return rows;
-    } catch { /* 次 */ }
+    } catch {
+      // 次のパスへ
+    }
   }
   return [] as any[];
 }
 
-
-// ダッシュボード行生成（API版・office_name/ID対応版）
-export async function getDashboardStaffRows(branchCode: string, dateISO: string): Promise<DashboardStaffRow[]> {
-  // ====== 共通ヘルパー ======
-  const normCode = (s: any) => String(s ?? "").replace(/[\s\-_.]/g, "").toUpperCase();
-  const normName = (s: any) => String(s ?? "").replace(/\u3000/g, "").replace(/\s+/g, "").toLowerCase();
-
-  const expectedOfficeName = branchCodeToOfficeName.get(branchCode) ?? "";
-
-  const isOff = (rec: any): boolean => {
-    if (!rec) return false;
-    if (rec.status === "off" || rec.status_jp === "休み") return true;
-    if (rec.is_off === true || rec.day_off === true) return true;
-    if (String(rec.work_type ?? "").toLowerCase() === "off") return true;
-    const its = rec.items ?? rec.record_items ?? [];
-    if (its.find((i: any) => i.category === "work_type" && String(i.value).toLowerCase() === "off")) return true;
-    if (!rec.work_start_time && !rec.work_end_time && its.length > 0) return true;
-    return false;
-  };
-
-  // ====== ローカルモード ======
+// ダッシュボード行生成（API確定値だけを採用）
+export async function getDashboardStaffRows(
+  branchCode: string,
+  dateISO: string
+): Promise<DashboardStaffRow[]> {
   if (!USE_API) {
     const emps = mockEmployees.filter((e) => e.branchCode === branchCode);
-    const recs = loadLS<LSRecord[]>(LS_RECORDS_KEY, []).filter((r) => r.date === dateISO);
-    const items = loadLS<LSItem[]>(LS_ITEMS_KEY, []);
-    const byEmp = new Map(recs.map((r) => [r.employeeCode, r]));
-
-    return emps.map((emp) => {
-      const lr = byEmp.get(emp.code);
-      const its = lr ? items.filter((i) => i.recordId === lr.id) : [];
-      const temperatureRaw = its.find((i) => i.category === "temperature")?.value;
-      const temperature = temperatureRaw ? Number(temperatureRaw) : null;
-      const symptoms = its.some(
-        (i) =>
-          i.is_normal === false &&
-          ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
-      );
-      const comment = its.find((i) => i.is_normal === false && i.value)?.value ?? "";
-      const hasStart = !!lr?.work_start_time;
-      const hasEnd = !!lr?.work_end_time;
-      const off = isOff(lr);
-      let status_jp: string | undefined = undefined;
-      if (off) status_jp = "休み";
-      else if (hasStart && hasEnd) status_jp = "退勤入力済";
-      else if (hasStart) status_jp = "出勤入力済";
-
-      return {
-        id: emp.code,
-        name: emp.name,
-        arrivalRegistered: hasStart,
-        departureRegistered: hasEnd,
-        temperature,
-        symptoms,
-        comment,
-        is_off: off,
-        status_jp,
-        work_type: off ? "off" : "work",
-      } as DashboardStaffRow;
-    });
-  }
-
-  // ====== APIモード ======
-
-  // --- 1) 従業員一覧 ---
-  const empRes = await apiGet<any>(`/employees?office_code=${encodeURIComponent(branchCode)}`).catch(() => null);
-  const empRaw: any[] = Array.isArray(empRes?.results) ? empRes.results : Array.isArray(empRes) ? empRes : [];
-
-  const fallbackCodes = new Set(
-    mockEmployees.filter((e) => e.branchCode === branchCode).map((e) => String(e.code))
-  );
-
-  const employees = empRaw
-    .filter((e) => {
-      const officeField = String(e?.office_code ?? e?.branch_code ?? e?.office ?? "");
-      const officeNameField = String(e?.office_name ?? e?.branch_name ?? "");
-      const byCode = normCode(officeField) === normCode(branchCode);
-      const byName = expectedOfficeName
-        ? normName(officeNameField) === normName(expectedOfficeName)
-        : false;
-      const byFallback = fallbackCodes.has(String(e?.code ?? e?.employee_code ?? e?.id ?? ""));
-      return byCode || byName || byFallback;
-    })
-    .map((e) => ({
-      id: Number(e.id),
-      code: String(e?.code ?? ""),
-      name: String(e?.name ?? ""),
-      office_name: String(e?.office_name ?? ""),
+    return emps.map((emp) => ({
+      id: emp.code,
+      name: emp.name,
+      arrivalRegistered: false,
+      departureRegistered: false,
+      temperature: null,
+      symptoms: false,
+      comment: "",
+      is_off: false,
+      status_jp: "未入力",
+      work_type: "work",
     }));
-
-  // --- 2) 当日のレコード ---
-  const recRes = await apiGet<any>(
-    `/records/?office_code=${encodeURIComponent(branchCode)}&date=${encodeURIComponent(dateISO)}`
-  ).catch(() => null);
-  const recRaw: any[] = Array.isArray(recRes?.results) ? recRes.results : Array.isArray(recRes) ? recRes : [];
-
-  // --- 3) record.employee（数値ID）をキーに索引化 ---
-  const recById = new Map<number, any>();
-  for (const r of recRaw) {
-    const id = Number(r?.employee);
-    if (!isNaN(id)) recById.set(id, r);
   }
 
-  // --- 4) 行生成 ---
-  return employees.map((e) => {
-    const rec = recById.get(e.id) ?? null;
-    const items: any[] = rec ? rec.items ?? rec.record_items ?? [] : [];
-    const tRaw = items.find((i: any) => i.category === "temperature")?.value;
-    const temperature = tRaw != null && `${tRaw}` !== "" ? Number(tRaw) : null;
-    const symptoms = items.some(
-      (i: any) =>
-        i.is_normal === false &&
-        ["no_health_issues", "family_no_symptoms", "no_respiratory_symptoms"].includes(i.category)
-    );
-    const comment = items.find((i: any) => i.is_normal === false && (i.comment || i.value))?.comment ?? "";
-    const hasStart = !!rec?.work_start_time;
-    const hasEnd = !!rec?.work_end_time;
-    const off = isOff(rec);
-    let status_jp: string | undefined = undefined;
-    if (off) status_jp = "休み";
-    else if (hasStart && hasEnd) status_jp = "退勤入力済";
-    else if (hasStart) status_jp = "出勤入力済";
+  const rows = await fetchDashboardRowsRaw(branchCode, dateISO);
 
-    return {
-      id: e.code,
-      name: e.name,
-      arrivalRegistered: hasStart,
-      departureRegistered: hasEnd,
-      temperature,
-      symptoms,
-      comment,
-      is_off: off,
-      status_jp,
-      work_type: off ? "off" : "work",
-    } as DashboardStaffRow;
-  });
+// --- 4) 行生成 ---
+return rows.map((r: any): DashboardStaffRow => {
+  // 文字/数値も受けるブール正規化
+  const toBool = (v: any) =>
+    v === true || v === 1 || v === "1" || v === "true" || v === "True";
+
+  const workType = String(r.work_type ?? r.workType ?? "").trim().toLowerCase();
+  const statusFromApi = String(r.statusJp ?? r.status_jp ?? "").trim();
+
+  // ★ 休み判定を強化：数値/文字の真偽も含めて吸収
+  const isOff =
+    toBool(r.isOff) ||
+    toBool(r.is_off) ||
+    toBool(r.day_off) ||
+    workType === "off" ||
+    /休/.test(statusFromApi) ||   // APIが日本語ステータスだけ返す場合
+    /off/i.test(statusFromApi);   // 英語ステータスでも拾う
+
+  // 休みが true なら無条件で "休み"
+  const status_jp = isOff
+    ? "休み"
+    : (statusFromApi && statusFromApi !== "-" ? statusFromApi : "-");
+
+  return {
+    id: String(r.employee_code ?? r.employee ?? r.id ?? ""),
+    name: String(r.employee_name ?? r.name ?? ""),
+    arrivalRegistered: Boolean(
+      r.arrivalRegistered ?? r.checked_in ?? r.work_start_time
+    ),
+    departureRegistered: Boolean(
+      r.departureRegistered ?? r.checked_out ?? r.work_end_time
+    ),
+    temperature:
+      r.temperature != null && String(r.temperature) !== ""
+        ? Number(r.temperature)
+        : null,
+    symptoms: Boolean(r.symptoms ?? r.has_symptoms ?? false),
+    comment: String(r.comment ?? ""),
+    is_off: isOff,
+    status_jp,
+    work_type: (r.work_type ?? (isOff ? "off" : "work")) as "off" | "work",
+  };
+});
 }
-
-
 /* --------------------------------
  * 管理画面：詳細取得（ラベル付き）
  * -------------------------------- */
@@ -739,7 +646,6 @@ export async function getRecordDetailForm(row: HygieneRecordRow): Promise<
     }[];
   }
 > {
-  // まずLSで探す
   const itemsLS = loadLS<LSItem[]>(LS_ITEMS_KEY, []).filter((i) => i.recordId === row.id);
   if (itemsLS.length > 0) {
     const items = itemsLS.map((it) => {
@@ -757,7 +663,6 @@ export async function getRecordDetailForm(row: HygieneRecordRow): Promise<
     return { ...row, comment, items };
   }
 
-  // フォールバック：モック
   const rec = mockRecords.find((r) => `${r.date}-${r.employeeCode}` === row.id) ?? null;
   const itemsRaw = rec ? mockRecordItems.filter((i) => i.recordId === rec.id) : [];
   const items = itemsRaw.map((it) => {
@@ -788,7 +693,6 @@ export type EmployeeDTO = {
 
 const EMP_STORE_KEY = "employees.snapshot.v1";
 
-// 事実上の「現在の名簿」を返す（localStorage があればそれ、なければモック）
 export async function listEmployees(): Promise<EmployeeDTO[]> {
   const raw = localStorage.getItem(EMP_STORE_KEY);
   if (raw) return JSON.parse(raw) as EmployeeDTO[];
@@ -799,7 +703,6 @@ async function saveEmployees(all: EmployeeDTO[]) {
   localStorage.setItem(EMP_STORE_KEY, JSON.stringify(all));
 }
 
-// 追加
 export async function createEmployee(newEmp: EmployeeDTO): Promise<EmployeeDTO> {
   const all = await listEmployees();
   if (all.some((e) => e.code === newEmp.code)) {
@@ -810,7 +713,6 @@ export async function createEmployee(newEmp: EmployeeDTO): Promise<EmployeeDTO> 
   return newEmp;
 }
 
-// 更新（code 変更も許可）
 export async function updateEmployee(code: string, patch: Partial<EmployeeDTO>): Promise<EmployeeDTO> {
   const all = await listEmployees();
   const idx = all.findIndex((e) => e.code === code);
@@ -826,21 +728,19 @@ export async function updateEmployee(code: string, patch: Partial<EmployeeDTO>):
   return updated;
 }
 
-// 削除
 export async function deleteEmployee(code: string): Promise<void> {
   const all = await listEmployees();
   const next = all.filter((e) => e.code !== code);
   await saveEmployees(next);
 }
 
-// 営業所名 → 営業所コード
 export function getBranchCodeByOfficeName(name: string): string | null {
   const b = mockBranches.find((x) => x.name === name);
   return b ? b.code : null;
 }
 
 /* --------------------------------
- * 既存 submit（API用）。ローカル時は saveDailyCheck を使う想定
+ * 既存 submit（API用）。ローカル時は saveDailyCheck を想定
  * -------------------------------- */
 type WriteItem = {
   category: string;
@@ -875,15 +775,16 @@ export async function submitDailyForm(params: {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      credentials: CREDENTIALS,
     });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
+      console.warn("[/api error]", join("/records/submit"), r.status, t);
       throw new Error(`submit failed: ${r.status} ${t}`);
     }
     return;
   }
 
-  // モック/ローカル時は saveDailyCheck を使う想定なので何もしない
   console.warn("USE_API=0 のため、submitDailyForm は無効（saveDailyCheck を利用してください）");
 }
 
@@ -897,11 +798,9 @@ export async function getBranchExpectedPin(branchCode: string): Promise<string |
 
   if (!b) return null;
 
-  // managementPin があれば優先、なければ password を使う
   const pinRaw = b.managementPin ?? b.password;
   if (pinRaw == null) return null;
 
-  // 数値でも文字列でも受け取り、4桁ゼロパディングして返す
   const s = String(pinRaw);
   return /^\d+$/.test(s) ? s.padStart(4, "0") : s;
 }
@@ -922,10 +821,8 @@ export async function getCalendarStatus(employeeCode: string, month: string): Pr
   }
 }
 
-// 互換ラッパ：配列で欲しい場合
 export async function getCalendarMarks(employeeCode: string, ym: string): Promise<string[]> {
   if (!USE_API) {
-    // モック: 当月の1,3,5日に丸
     const d = new Date(ym + "-01");
     return [1, 3, 5].map((n) => format(new Date(d.getFullYear(), d.getMonth(), n), "yyyy-MM-dd"));
   }

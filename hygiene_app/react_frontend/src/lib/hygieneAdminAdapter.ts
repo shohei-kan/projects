@@ -162,13 +162,24 @@ function normalizeRow(x: any): NormalizedRow {
     : [];
 
 // ---- ここから置き換え ----
-const rawStatusStr = toStr(x?.status_jp ?? x?.status ?? "").trim();
-const isOffFlag =
-  Boolean(x?.is_off ?? x?.day_off ?? x?.is_day_off) ||
-  /off|休(み|暇|業)/i.test(toStr(x?.work_type ?? rawStatusStr));
+type StatusLiteral = HygieneRecordRow["status"];
 
-let status: HygieneRecordRow["status"];
-if (isOffFlag || /休/i.test(rawStatusStr) || /off/i.test(rawStatusStr)) {
+const toStatus = (raw: string): StatusLiteral => {
+  const s = String(raw).trim().replace(/\s+/g, "");
+  if (/休/.test(s))   return "休み";
+  if (/退勤/.test(s)) return "退勤入力済";
+  if (/出勤/.test(s)) return "出勤入力済";
+  // "未入力" 以外の未知表現は安全側で未入力に丸める
+  return "未入力";
+};
+
+const apiStatusRaw = toStr(x?.status_jp ?? x?.status ?? "");
+const isOffFlag = Boolean(x?.is_off ?? x?.day_off ?? x?.is_day_off);
+
+let status: StatusLiteral;
+if (apiStatusRaw) {
+  status = toStatus(apiStatusRaw);            // ← ここで union に丸める
+} else if (isOffFlag) {
   status = "休み";
 } else if (x?.clock_out || x?.checked_out || x?.work_end_time) {
   status = "退勤入力済";
@@ -177,8 +188,8 @@ if (isOffFlag || /休/i.test(rawStatusStr) || /off/i.test(rawStatusStr)) {
 } else {
   status = "未入力";
 }
+// ↓ 既存の代入／return 先で status を使う
 // ---- 置き換えここまで ----
-
   const hasAnyComment = Boolean(
     x?.hasAnyComment ?? x?.has_comment ?? x?.has_any_comment ?? (x?.comment_count ?? 0) > 0
   );

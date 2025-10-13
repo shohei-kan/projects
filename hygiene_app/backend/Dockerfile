@@ -17,3 +17,5 @@ RUN chmod +x /app/backend/entrypoint.sh
 
 EXPOSE 8000
 CMD ["/app/backend/entrypoint.sh"]
+
+RUN apt-get update && apt-get install -y postgresql-client

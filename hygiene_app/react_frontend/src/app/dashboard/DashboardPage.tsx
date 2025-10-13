@@ -65,16 +65,24 @@ const COOLDOWN_MINUTES = 5;
 export default function HygieneDashboard() {
   const navigate = useNavigate();
 
-  // 「休み」かどうか（アダプタがどの形で返しても拾えるよう幅広く判定）
+  // 休み判定（APIの型ゆれを吸収）
   const isDayOff = (r: DashboardStaffRow) => {
     const v: any = r as any;
+    const toBool = (x: any) =>
+      x === true || x === 1 || x === "1" || x === "true" || x === "True";
+
+    const workType = String(v.work_type ?? "").trim().toLowerCase();
+    const s = String(v.status_jp ?? v.status ?? "").trim();
+
     return (
-      v.status === "休み" ||
-      v.status_jp === "休み" ||
-      v.isOff === true ||
-      v.is_off === true ||
-v.day_off === true ||
-  String(v.work_type ?? "").toLowerCase() === "off"    );
+      s === "休み" ||
+      toBool(v.isOff) ||
+      toBool(v.is_off) ||
+      toBool(v.day_off) ||
+      workType === "off" ||
+      /休/.test(s) ||
+      /off/i.test(s)
+    );
   };
 
   // session
@@ -133,16 +141,20 @@ v.day_off === true ||
     if (isDayOff(r)) return <Moon className="w-3 h-3 text-purple-600" />;
     if (r.arrivalRegistered && r.departureRegistered) return <CheckCircle className="w-3 h-3 text-green-600" />;
     if (r.arrivalRegistered) return <Clock className="w-3 h-3 text-yellow-600" />;
-    return <Clock className="w-3 h-3 text-gray-400" />; // ← 未入力も高さを安定させる
+    return <Clock className="w-3 h-3 text-gray-400" />;
   };
 
+  // ステータス表示（休みを最優先）
   const getStatusText = (r: DashboardStaffRow) => {
-if (typeof r.status_jp === "string" && r.status_jp.trim() !== "" && r.status_jp !== "-") {
-        return r.status_jp;              // "休み" / "出勤入力済" / "退勤入力済" / "-" など
-    }
-    if (r.is_off === true || (r.work_type && r.work_type.toLowerCase() === "off")) return "休み";
-    if (!!r.arrivalRegistered && !!r.departureRegistered) return "退勤入力済";
-    if (!!r.arrivalRegistered) return "出勤入力済";
+    if (isDayOff(r)) return "休み";
+
+    // 次にサーバの status_jp（ただし "-" は無視）
+    const s = typeof (r as any).status_jp === "string" ? (r as any).status_jp.trim() : "";
+    if (s && s !== "-") return s;
+
+    // 最後にローカル表示補助
+    if (r.arrivalRegistered && r.departureRegistered) return "退勤入力済";
+    if (r.arrivalRegistered) return "出勤入力済";
     return "-";
   };
 
