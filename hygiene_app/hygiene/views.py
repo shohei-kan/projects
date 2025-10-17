@@ -1,6 +1,8 @@
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.db import transaction
 from django.db.models import Q, Count
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -40,14 +42,15 @@ class RecordViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
+        # OneToOne は select_related の方が効率的
         qs = (
             Record.objects
-            .select_related("employee", "supervisor_selected")
-            .prefetch_related(
-                "items",
-                "supervisor_confirmation",
-                "supervisor_confirmation__confirmed_by",
-            )
+.select_related("employee", "supervisor_selected")
+           .prefetch_related(
+               "items",
+               "supervisor_confirmation",
+               "supervisor_confirmation__confirmed_by",
+           )            .prefetch_related("items")
         )
         emp_code = self.request.query_params.get("employee_code")
         date_str = self.request.query_params.get("date")
@@ -80,10 +83,12 @@ class DashboardView(APIView):
         rows = []
         for emp in employees:
             rec = (
-                Record.objects.filter(employee=emp, date=d)
-                .prefetch_related("items")
+            
+                Record.objects
+                .prefetch_related("items", "supervisor_confirmation", "supervisor_confirmation__confirmed_by")
+                .filter(employee=emp, date=d)
                 .first()
-            )
+                )
             temperature = None
             symptoms = False
             comment = ""
@@ -124,9 +129,15 @@ class DashboardView(APIView):
                     "temperature": temperature,
                     "symptoms": symptoms,
                     "comment": comment,
-                    # 追加（サーバ確定値）
+                    # サーバ確定値
                     "isOff": is_off,
                     "statusJp": status_jp,
+                    # 確認状態（管理画面向け）
+                    "supervisorConfirmed": bool(rec and getattr(rec, "supervisor_confirmation", None)),
+                    "supervisorCode": (
+                        getattr(getattr(getattr(rec, "supervisor_confirmation", None), "confirmed_by", None), "code", None)
+                        if rec else None
+                    ),
                 }
             )
         return Response({"rows": rows}, status=status.HTTP_200_OK)
@@ -147,8 +158,6 @@ class SubmitRecordView(APIView):
 
     def post(self, request):
         data = request.data or {}
-        print("[SubmitRecordView] payload =", data)
-
         employee_code = data.get("employee_code")
         date_str = data.get("date")
         if not employee_code or not date_str:
@@ -191,7 +200,7 @@ class SubmitRecordView(APIView):
 
             decided_work_type = item_work_type or top_level_work_type or rec.work_type
 
-            # 退勤のみ → NG（既存に start が無く、今回も start 送ってない）
+            # 退勤のみ → NG
             if has_end_key and not has_start_key and not rec.work_start_time:
                 return Response(
                     {"detail": "出勤が未登録のため、退勤は登録できません。先に出勤を登録してください。"},
@@ -256,10 +265,14 @@ class SubmitRecordView(APIView):
                 }
                 RecordItem.objects.update_or_create(record=rec, category=cat, defaults=defaults)
 
+            # ★ 責任者確認：confirmed_by/confirmed_at を保存
             supervisor_confirmed = data.get("supervisor_confirmed", None)
             if supervisor_confirmed is not None:
                 if supervisor_confirmed:
-                    SupervisorConfirmation.objects.get_or_create(record=rec)
+                    SupervisorConfirmation.objects.update_or_create(
+                        record=rec,
+                        defaults={"confirmed_by": supervisor, "confirmed_at": timezone.now()},
+                    )
                 else:
                     SupervisorConfirmation.objects.filter(record=rec).delete()
 
@@ -307,3 +320,28 @@ class CalendarStatusView(APIView):
 
         dates = [d.isoformat() for d in qs]
         return Response({"dates": dates}, status=status.HTTP_200_OK)
+
+# =========================
+# 確認トグル（管理画面向け）
+# =========================
+class RecordSupervisorConfirmView(APIView):
+    """
+    POST   /api/records/<id>/supervisor_confirm/   -> 確認ON（行を作る/更新）
+    DELETE /api/records/<id>/supervisor_confirm/   -> 確認OFF（行を削除）
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, pk: int):
+        rec = get_object_or_404(Record, pk=pk)
+        supervisor_code = request.data.get("supervisor_code")
+        supervisor = Employee.objects.filter(code=supervisor_code).first() if supervisor_code else None
+        SupervisorConfirmation.objects.update_or_create(
+            record=rec,
+            defaults={"confirmed_by": supervisor, "confirmed_at": timezone.now()},
+        )
+        return Response({"status": "ok", "supervisor_confirmed": True}, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk: int):
+        rec = get_object_or_404(Record, pk=pk)
+        SupervisorConfirmation.objects.filter(record=rec).delete()
+        return Response({"status": "ok", "supervisor_confirmed": False}, status=status.HTTP_200_OK)
