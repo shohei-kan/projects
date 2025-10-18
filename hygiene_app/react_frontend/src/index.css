@@ -160,3 +160,14 @@ td.has-record .rdp-day_button::after {
   height: 28px;
   border-radius: 8px;
 }
+
+/* ほんの少し大きめに（モバイル16→17px、md以上→18px） */
+html {
+  font-size: 17px;
+}
+
+@media (min-width: 768px) {
+  html {
+    font-size: 18px;
+  }
+}

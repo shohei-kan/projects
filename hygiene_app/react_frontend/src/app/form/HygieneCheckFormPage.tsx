@@ -1,7 +1,7 @@
 // src/app/form/HygieneCheckFormPage.tsx
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 // UI
@@ -66,7 +66,6 @@ type WorkType = "work" | "off";
 // 取得レコードを緩く受けるための型（ビルドエラー防止）
 type TodayRecordLike = {
   work_start_time?: string | null;
-  // 以降はどの実装でも拾えるように緩く
   status?: unknown;
   status_jp?: unknown;
   is_off?: unknown;
@@ -87,7 +86,121 @@ const isDayOffRecord = (rec: TodayRecordLike | null | undefined) => {
   );
 };
 
-/* ---------------- Component ---------------- */
+/* ---------------- Top-level subcomponent ---------------- */
+type SectionProps = {
+  title: string;
+  items: CheckItem[];
+  setItems: React.Dispatch<React.SetStateAction<CheckItem[]>>;
+  headerColor?: "blue" | "green" | "orange" | "purple" | "teal";
+  icon?: React.ComponentType<any>;
+  className?: string;
+  updateCheckItem: (
+    setItems: React.Dispatch<React.SetStateAction<CheckItem[]>>,
+    id: string,
+    checked: boolean,
+    comment?: string
+  ) => void;
+};
+
+export const CompactCheckboxSection = React.memo(function CompactCheckboxSection({
+  title,
+  items,
+  setItems,
+  headerColor = "blue",
+  icon: Icon,
+  className = "",
+  updateCheckItem,
+}: SectionProps) {
+  const getHeaderColors = (color: string) => {
+    switch (color) {
+      case "green":
+        return "bg-emerald-50 border-emerald-200 text-emerald-800";
+      case "orange":
+        return "bg-orange-50 border-orange-200 text-orange-800";
+      case "purple":
+        return "bg-purple-50 border-purple-200 text-purple-800";
+      case "teal":
+        return "bg-teal-50 border-teal-200 text-teal-800";
+      default:
+        return "bg-blue-50 border-blue-200 text-blue-800";
+    }
+  };
+  const getIconColors = (color: string) => {
+    switch (color) {
+      case "green":
+        return "text-emerald-600";
+      case "orange":
+        return "text-orange-600";
+      case "purple":
+        return "text-purple-600";
+      case "teal":
+        return "text-teal-600";
+      default:
+        return "text-blue-600";
+    }
+  };
+
+  const hasIssues = items.some((i) => !i.checked);
+  const isComplete = !items.some((i) => !i.checked && i.comment.trim() === "");
+
+  return (
+    <Card className={`border-gray-200 ${className} ${hasIssues ? "ring-2 ring-amber-200" : ""}`}>
+      <CardHeader className={`pb-3 ${getHeaderColors(headerColor)} relative`}>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          {Icon && <Icon className={`w-4 h-4 ${getIconColors(headerColor)}`} />}
+          {title}
+          {isComplete && <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />}
+          {hasIssues && !isComplete && <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-4 pb-4">
+        {items.map((item) => (
+          <div key={item.id} className="space-y-2">
+            <div className="flex items-start space-x-2">
+              <label htmlFor={item.id} className="flex items-center gap-3 cursor-pointer select-none">
+                <Checkbox
+                  id={item.id}
+                  checked={item.checked}
+                  onCheckedChange={(checked) =>
+                    updateCheckItem(setItems, item.id, checked as boolean)
+                  }
+                  className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
+                    item.checked
+                      ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                      : ""
+                  }`}
+                />
+                <span
+                  className={`text-sm leading-4 ${
+                    item.checked ? "text-gray-900" : "text-red-700 font-medium"
+                  }`}
+                >
+                  {item.label}
+                </span>
+              </label>
+            </div>
+
+            {item.requiresComment && (
+              <div className="ml-5 space-y-1">
+                <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
+                <Textarea
+                  id={`${item.id}-comment`}
+                  placeholder="症状や状況の詳細を記入してください"
+                  value={item.comment ?? ""}
+                  onChange={(e) => updateCheckItem(setItems, item.id, item.checked, e.target.value)}
+                  className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
+                  rows={2}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+});
+
+/* ---------------- Page Component ---------------- */
 export default function DailyHygieneCheckForm() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -122,7 +235,6 @@ export default function DailyHygieneCheckForm() {
     session?.user && session.user.role !== "hq_admin"
       ? (session.user.branchCode ?? "")
       : "";
-  // セッション > 旧localStorageキー の優先で使用
   const branchCode = (branchCodeFromSession || localStorage.getItem("branchCode") || "").trim();
 
   /* ---------- 従業員一覧をアダプターから取得 ---------- */
@@ -162,7 +274,6 @@ export default function DailyHygieneCheckForm() {
 
   // 勤務区分（出勤日／休み）
   const [workType, setWorkType] = useState<WorkType>("work");
-  // 休日に切り替えたら常に Step1 に戻す
   useEffect(() => {
     if (workType === "off" && currentStep !== 1) setCurrentStep(1);
   }, [workType, currentStep]);
@@ -282,7 +393,7 @@ export default function DailyHygieneCheckForm() {
         it.id === targetId
           ? {
               ...it,
-              checked: !!normal, // is_normal === true を「正常（チェックON）」とみなす
+              checked: !!normal,
               requiresComment: !normal,
               comment:
                 !normal && value !== undefined && value !== null
@@ -384,16 +495,15 @@ export default function DailyHygieneCheckForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basicInfo.employee, employeeCodeParam, basicInfo.date, workType, currentStep]);
 
-  /* ---------- ヘルパ ---------- */
+  /* ---------- ヘルパ（関数型 setState 版） ---------- */
   const updateCheckItem = (
-    items: CheckItem[],
     setItems: React.Dispatch<React.SetStateAction<CheckItem[]>>,
     id: string,
     checked: boolean,
     comment?: string
   ) => {
-    setItems(
-      items.map((item) => {
+    setItems((prev) =>
+      prev.map((item) => {
         if (item.id !== id) return item;
         const next = { ...item, checked, requiresComment: !checked };
         if (comment !== undefined) next.comment = comment;
@@ -454,60 +564,58 @@ export default function DailyHygieneCheckForm() {
     }
 
     // 送信用アイテム（API仕様に合わせて comment を送る）
-const items: {
-    category: string;
-    is_normal: boolean;
-    value?: number | string | null;
-    comment?: string | null;
-  }[] = [{ category: "temperature", is_normal: true, value: Number(basicInfo.temperature) }];
+    const items: {
+      category: string;
+      is_normal: boolean;
+      value?: number | string | null;
+      comment?: string | null;
+    }[] = [{ category: "temperature", is_normal: true, value: Number(basicInfo.temperature) }];
 
-  // ★ 再追加：セクション配列を items に詰める小ヘルパー
-  const pushFrom = (arr: CheckItem[]) => {
-    arr.forEach((c) =>
-      items.push({
-        category: c.id,
-        is_normal: c.checked,
-        comment: c.comment || null,
-      })
-    );
+    const pushFrom = (arr: CheckItem[]) => {
+      arr.forEach((c) =>
+        items.push({
+          category: c.id,
+          is_normal: c.checked,
+          comment: c.comment || null,
+        })
+      );
+    };
+
+    pushFrom(healthChecks);
+    if (workType === "work") {
+      pushFrom(respiratoryChecks);
+      pushFrom(handHygieneChecks);
+      pushFrom(uniformHygieneChecks);
+    }
+
+    // ★ 休日なら勤務区分をアイテムとして送る（サーバが休み判定できるように）
+    if (workType === "off") {
+      items.push({ category: "work_type", is_normal: true, value: "off" });
+    }
+
+    const payload = {
+      employeeCode: basicInfo.employee,
+      dateISO: basicInfo.date,
+      workStartTime: workType === "work" ? "08:30" : null,
+      workEndTime: null,
+      items,
+      supervisorCode: basicInfo.supervisor || null,
+    } as const;
+
+    try {
+      setSaving(true);
+      setErrorMsg(null);
+      await submitDailyForm(payload);
+      alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
+      navigate("/dashboard");
+    } catch (err) {
+      const msg = (err as Error).message;
+      setErrorMsg(msg);
+      alert("保存に失敗しました: " + msg);
+    } finally {
+      setSaving(false);
+    }
   };
-
-  // 既存チェック群を追加
-  pushFrom(healthChecks);
-  if (workType === "work") {
-    pushFrom(respiratoryChecks);
-    pushFrom(handHygieneChecks);
-    pushFrom(uniformHygieneChecks);
-  }
-
-  // ★ 休日なら勤務区分をアイテムとして送る（サーバが休み判定できるように）
-  if (workType === "off") {
-    items.push({ category: "work_type", is_normal: true, value: "off" });
-  }
-
-  const payload = {
-    employeeCode: basicInfo.employee,
-    dateISO: basicInfo.date,
-    workStartTime: workType === "work" ? "08:30" : null,
-    workEndTime: null,
-    items,
-    supervisorCode: basicInfo.supervisor || null,
-  } as const;
-
-  try {
-    setSaving(true);
-    setErrorMsg(null);
-    await submitDailyForm(payload);
-    alert(workType === "work" ? "出勤時チェックを保存しました！" : "休日の体調チェックを保存しました！");
-    navigate("/dashboard");
-  } catch (err) {
-    const msg = (err as Error).message;
-    setErrorMsg(msg);
-    alert("保存に失敗しました: " + msg);
-  } finally {
-    setSaving(false);
-  }
-};
 
   const handleFinalSubmit = async () => {
     const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
@@ -519,12 +627,10 @@ const items: {
       alert("従業員を選択してください。");
       return;
     }
-    // 休日は退勤登録不可
     if (workType === "off") {
       alert("休日は退勤チェックを登録できません。");
       return;
     }
-    // 未出勤は退勤登録不可
     if (!isCheckedIn) {
       alert("出勤チェックが完了していません。先に出勤チェックを保存してください。");
       setCurrentStep(1);
@@ -547,14 +653,11 @@ const items: {
     try {
       setSaving(true);
       setErrorMsg(null);
-      console.info("[form->submit] step2 payload", payload);
       await submitDailyForm(payload);
-      console.info("[form->submit] step2 OK");
       alert("退勤チェックを保存しました！");
       navigate("/dashboard");
     } catch (err) {
       const msg = (err as Error).message;
-      console.error("[form->submit] step2 NG", err);
       setErrorMsg(msg);
       alert("保存に失敗しました: " + msg);
     } finally {
@@ -570,10 +673,8 @@ const items: {
   const formatCaption: Formatters["formatCaption"] = (month) =>
     format(month, "yyyy年M月", { locale: ja });
 
-  // 丸を付ける日付セット
   const [marks, setMarks] = useState<Set<string>>(new Set());
 
-  // 月の印を読み込む
   const loadMarks = useCallback(async (monthDate: Date, empCode: string) => {
     try {
       const ym = format(monthDate, "yyyy-MM");
@@ -585,18 +686,16 @@ const items: {
     }
   }, []);
 
-  // ★ 表示中の月（初期は選択日の月）
   const [month, setMonth] = useState<Date>(() => startOfMonth(parseISO(basicInfo.date)));
 
   useEffect(() => {
     const code = basicInfo.employee || employeeCodeParam;
     if (!code || !basicInfo.date) return;
     const m = startOfMonth(parseISO(basicInfo.date));
-    setMonth(m); // カレンダーの表示月を同期
+    setMonth(m);
     loadMarks(m, code);
   }, [basicInfo.employee, employeeCodeParam, basicInfo.date, loadMarks]);
 
-  // ★ Popover を開いた瞬間に必ず当月の marks を用意
   const handleOpenChange = (open: boolean) => {
     if (!open) return;
     const code = basicInfo.employee || employeeCodeParam;
@@ -607,7 +706,6 @@ const items: {
   return (
     <div className="hygiene-form min-h-screen bg-gray-50 py-4 relative">
       {!branchCode ? (
-        // ログイン促し
         <div className="min-h-[60vh] grid place-items-center px-6">
           <div className="max-w-md w-full bg-white rounded-xl shadow p-6 text-center space-y-4">
             <p className="text-lg font-medium">従業員データが取得できませんでした。</p>
@@ -628,12 +726,10 @@ const items: {
           </div>
         </div>
       ) : !empLoaded ? (
-        // ローディング
         <div className="min-h-[60vh] grid place-items-center">
           <div className="animate-pulse text-gray-500">読み込み中...</div>
         </div>
       ) : employeesInOffice.length === 0 ? (
-        // 空データ
         <div className="min-h-[60vh] grid place-items-center">
           <div className="text-gray-600">この営業所に従業員が見つかりませんでした。</div>
         </div>
@@ -680,13 +776,19 @@ const items: {
               </div>
             )}
 
-            <p className="text-gray-600 text-sm text-center">
-              {workType === "off"
-                ? "休日の体調チェックのみを記録します（体温・体調チェック）"
-                : currentStep === 1
-                ? "出勤時の衛生管理項目を確認し、記録してください"
-                : "作業後の確認項目をチェックしてください"}
-            </p>
+              <p className="text-gray-600 text-sm text-center">
+                {workType === "off"
+                  ? "休日の体調チェックのみを記録します（体温・体調チェック）"
+                  : currentStep === 1
+                  ? (
+                    <>
+                      原則として顔色等を見ながら対面チェックを行う・対面チェックが困難な場合は自己申告とする
+                      <br />出勤し作業に入る前にチェックする（異常なし✅、異常あり⬜︎）  異常ありの場合は責任者に申し出て不良内容と改善措置をコメントに記入する
+                      <br />※体調異常とは、下痢、嘔吐、腹痛、発熱、倦怠感、咳、くしゃみ等の呼吸器症状
+                    </>
+                  )
+                  : "作業後の確認項目をチェックしてください"}
+              </p>
           </div>
 
           {/* Step 1 */}
@@ -939,12 +1041,7 @@ const items: {
                                 id={item.id}
                                 checked={item.checked}
                                 onCheckedChange={(checked) =>
-                                  updateCheckItem(
-                                    healthChecks,
-                                    setHealthChecks,
-                                    item.id,
-                                    checked as boolean
-                                  )
+                                  updateCheckItem(setHealthChecks, item.id, checked as boolean)
                                 }
                                 className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
                                   item.checked
@@ -968,15 +1065,9 @@ const items: {
                               <Textarea
                                 id={`${item.id}-comment`}
                                 placeholder="症状や状況の詳細を記入してください"
-                                value={item.comment}
+                                value={item.comment ?? ""}
                                 onChange={(e) =>
-                                  updateCheckItem(
-                                    healthChecks,
-                                    setHealthChecks,
-                                    item.id,
-                                    item.checked,
-                                    e.target.value
-                                  )
+                                  updateCheckItem(setHealthChecks, item.id, item.checked, e.target.value)
                                 }
                                 className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
                                 rows={2}
@@ -998,6 +1089,7 @@ const items: {
                       setItems={setRespiratoryChecks}
                       headerColor="blue"
                       icon={Wind}
+                      updateCheckItem={updateCheckItem}
                     />
                     <CompactCheckboxSection
                       title="手指・爪の状態"
@@ -1005,6 +1097,7 @@ const items: {
                       setItems={setHandHygieneChecks}
                       headerColor="orange"
                       icon={Hand}
+                      updateCheckItem={updateCheckItem}
                     />
                     <CompactCheckboxSection
                       title="服装チェック"
@@ -1012,6 +1105,7 @@ const items: {
                       setItems={setUniformHygieneChecks}
                       headerColor="purple"
                       icon={Shirt}
+                      updateCheckItem={updateCheckItem}
                     />
                   </>
                 )}
@@ -1045,6 +1139,7 @@ const items: {
                   setItems={setPostWorkChecks}
                   headerColor="teal"
                   icon={ClipboardCheck}
+                  updateCheckItem={updateCheckItem}
                 />
               </div>
 
@@ -1073,110 +1168,4 @@ const items: {
       )}
     </div>
   );
-
-  /* ---------------- Sub: Section ---------------- */
-  function CompactCheckboxSection({
-    title,
-    items,
-    setItems,
-    headerColor = "blue",
-    icon: Icon,
-    className = "",
-  }: {
-    title: string;
-    items: CheckItem[];
-    setItems: React.Dispatch<React.SetStateAction<CheckItem[]>>;
-    headerColor?: "blue" | "green" | "orange" | "purple" | "teal";
-    icon?: React.ComponentType<any>;
-    className?: string;
-  }) {
-    const getHeaderColors = (color: string) => {
-      switch (color) {
-        case "green":
-          return "bg-emerald-50 border-emerald-200 text-emerald-800";
-        case "orange":
-          return "bg-orange-50 border-orange-200 text-orange-800";
-        case "purple":
-          return "bg-purple-50 border-purple-200 text-purple-800";
-        case "teal":
-          return "bg-teal-50 border-teal-200 text-teal-800";
-        default:
-          return "bg-blue-50 border-blue-200 text-blue-800";
-      }
-    };
-    const getIconColors = (color: string) => {
-      switch (color) {
-        case "green":
-          return "text-emerald-600";
-        case "orange":
-          return "text-orange-600";
-        case "purple":
-          return "text-purple-600";
-        case "teal":
-          return "text-teal-600";
-        default:
-          return "text-blue-600";
-      }
-    };
-    const hasIssues = items.some((i) => !i.checked);
-    const isComplete = !items.some((i) => !i.checked && i.comment.trim() === "");
-
-    return (
-      <Card className={`border-gray-200 ${className} ${hasIssues ? "ring-2 ring-amber-200" : ""}`}>
-        <CardHeader className={`pb-3 ${getHeaderColors(headerColor)} relative`}>
-          <CardTitle className="flex items-center gap-2 text-sm">
-            {Icon && <Icon className={`w-4 h-4 ${getIconColors(headerColor)}`} />}
-            {title}
-            {isComplete && <CheckCircle className="w-4 h-4 text-green-600 ml-auto" />}
-            {hasIssues && !isComplete && <AlertTriangle className="w-4 h-4 text-amber-600 ml-auto" />}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 pt-4 pb-4">
-          {items.map((item) => (
-            <div key={item.id} className="space-y-2">
-              <div className="flex items-start space-x-2">
-                <label htmlFor={item.id} className="flex items-center gap-3 cursor-pointer select-none">
-                  <Checkbox
-                    id={item.id}
-                    checked={item.checked}
-                    onCheckedChange={(checked) =>
-                      updateCheckItem(items, setItems, item.id, checked as boolean)
-                    }
-                    className={`h-4 w-4 shrink-0 translate-y-[1px] border-gray-300 ${
-                      item.checked
-                        ? "data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
-                        : ""
-                    }`}
-                  />
-                  <span
-                    className={`text-sm leading-4 ${
-                      item.checked ? "text-gray-900" : "text-red-700 font-medium"
-                    }`}
-                  >
-                    {item.label}
-                  </span>
-                </label>
-              </div>
-
-              {item.requiresComment && (
-                <div className="ml-5 space-y-1">
-                  <span className="text-red-600 text-xs">詳細をご記入ください（必須）</span>
-                  <Textarea
-                    id={`${item.id}-comment`}
-                    placeholder="症状や状況の詳細を記入してください"
-                    value={item.comment}
-                    onChange={(e) =>
-                      updateCheckItem(items, setItems, item.id, item.checked, e.target.value)
-                    }
-                    className="border-red-200 focus:border-red-400 bg-red-50 text-sm"
-                    rows={2}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-    );
-  }
 }
