@@ -1,3 +1,4 @@
+# hygiene/serializers.py
 from rest_framework import serializers
 from .models import Office, Employee, Record, RecordItem, SupervisorConfirmation
 
@@ -69,6 +70,7 @@ class RecordItemSerializer(serializers.ModelSerializer):
 class RecordSerializer(serializers.ModelSerializer):
     items = RecordItemSerializer(many=True, read_only=True)
     supervisor_code = serializers.SerializerMethodField()
+    supervisor_confirmed = serializers.SerializerMethodField()  # ★ 追加
     is_off = serializers.BooleanField(read_only=True)
     work_type = serializers.CharField(read_only=True)
     status = serializers.SerializerMethodField()
@@ -80,7 +82,7 @@ class RecordSerializer(serializers.ModelSerializer):
             "id", "date", "employee",
             "work_start_time", "work_end_time",
             "items",
-            "supervisor_selected", "supervisor_code",
+            "supervisor_selected", "supervisor_code", "supervisor_confirmed",
             "is_off", "work_type",
             "status", "status_jp",
         )
@@ -88,16 +90,32 @@ class RecordSerializer(serializers.ModelSerializer):
 
     def get_supervisor_code(self, obj):
         sc = getattr(obj, "supervisor_confirmation", None)
-        if sc and sc.confirmed_by and sc.confirmed_by.code:
+        if sc and getattr(sc, "confirmed_by_id", None) and getattr(sc.confirmed_by, "code", None):
             return sc.confirmed_by.code
-        return getattr(obj.supervisor_selected, "code", None)
+        return getattr(getattr(obj, "supervisor_selected", None), "code", None)
 
+    def get_supervisor_confirmed(self, obj) -> bool:
+        """
+        ViewSet 側の annotate(supervisor_confirmed=...) があればそれを返す。
+        無ければ OneToOne の存在で判定（prefetch 済みなら追加クエリなし）。
+        """
+        annotated = getattr(obj, "supervisor_confirmed", None)
+        if annotated is not None:
+            return bool(annotated)
+        try:
+            # 逆参照が無ければ RelatedObjectDoesNotExist が飛ぶことがあるので握りつぶす
+            _ = obj.supervisor_confirmation
+            return True
+        except Exception:
+            return False
+
+    # ---- ステータス ----
     def _status_code(self, obj) -> str:
         if getattr(obj, "is_off", False) or getattr(obj, "work_type", None) == "off":
             return "off"
-        if obj.work_end_time:
+        if getattr(obj, "work_end_time", None):
             return "left"
-        if obj.work_start_time:
+        if getattr(obj, "work_start_time", None):
             return "arrived"
         return "none"
 
@@ -105,7 +123,9 @@ class RecordSerializer(serializers.ModelSerializer):
         return self._status_code(obj)
 
     def get_status_jp(self, obj):
-        return {"off": "休み", "left": "退勤入力済", "arrived": "出勤入力済", "none": "-"}.get(self._status_code(obj), "-")
+        return {"off": "休み", "left": "退勤入力済", "arrived": "出勤入力済", "none": "-"}.get(
+            self._status_code(obj), "-"
+        )
 
 class SupervisorConfirmationSerializer(serializers.ModelSerializer):
     class Meta:

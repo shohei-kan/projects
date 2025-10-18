@@ -1,21 +1,23 @@
+# hygiene/views.py
+from datetime import date as _date
+
+from django.db import transaction
+from django.db.models import Q, Count,Exists, OuterRef
+
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-from django.db import transaction
-from django.db.models import Q, Count
-from django.shortcuts import get_object_or_404
-from rest_framework import viewsets, permissions, status
+from rest_framework import permissions, status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Office, Employee, Record, RecordItem, SupervisorConfirmation
+from .models import Employee, Office, Record, RecordItem, SupervisorConfirmation
 from .serializers import (
-    OfficeSerializer,
     EmployeeSerializer,
+    OfficeSerializer,
     RecordSerializer,
     SupervisorConfirmationSerializer,
 )
-
-from datetime import date as _date
 
 # =========================
 # Read APIs
@@ -26,31 +28,42 @@ class OfficeViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = OfficeSerializer
     permission_classes = [permissions.AllowAny]
 
+
 class EmployeeViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = EmployeeSerializer
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
         qs = Employee.objects.select_related("office")
-        branch = self.request.query_params.get("branch_code")
+        # branch_code / office_code の両方を許容（互換のため）
+        branch = self.request.query_params.get("branch_code") or self.request.query_params.get("office_code")
         if branch:
             qs = qs.filter(office__code=branch)
         return qs.order_by("code")
+
+
+class RecordViewSet(viewsets.ModelViewSet):
+    serializer_class = RecordSerializer
+    permission_classes = [permissions.AllowAny]
 
 class RecordViewSet(viewsets.ModelViewSet):
     serializer_class = RecordSerializer
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
-        # OneToOne は select_related の方が効率的
         qs = (
             Record.objects
-.select_related("employee", "supervisor_selected")
-           .prefetch_related(
-               "items",
-               "supervisor_confirmation",
-               "supervisor_confirmation__confirmed_by",
-           )            .prefetch_related("items")
+            .select_related("employee", "employee__office", "supervisor_selected")
+            .prefetch_related(
+                "items",
+                "supervisor_confirmation",
+                "supervisor_confirmation__confirmed_by",
+            )
+            .annotate(   # ← これを追加
+                supervisor_confirmed=Exists(
+                    SupervisorConfirmation.objects.filter(record_id=OuterRef("pk"))
+                )
+            )
         )
         emp_code = self.request.query_params.get("employee_code")
         date_str = self.request.query_params.get("date")
@@ -65,10 +78,11 @@ class SupervisorConfirmationViewSet(viewsets.ModelViewSet):
     serializer_class = SupervisorConfirmationSerializer
     permission_classes = [permissions.AllowAny]
 
+
 class DashboardView(APIView):
     """
     GET /api/dashboard?branch_code=KM3076&date=2025-08-25
-    フロントの getDashboardStaffRows と同じ形で返す
+    管理画面テーブル用の簡易サマリ
     """
     permission_classes = [permissions.AllowAny]
 
@@ -77,18 +91,31 @@ class DashboardView(APIView):
         date_str = request.query_params.get("date")
         d = parse_date(date_str) if date_str else None
         if not branch or not d:
-            return Response({"detail": "branch_code と date は必須です。"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "branch_code と date は必須です。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        employees = Employee.objects.select_related("office").filter(office__code=branch).order_by("code")
+        employees = (
+            Employee.objects.select_related("office")
+            .filter(office__code=branch)
+            .order_by("code")
+        )
+
         rows = []
         for emp in employees:
             rec = (
-            
                 Record.objects
-                .prefetch_related("items", "supervisor_confirmation", "supervisor_confirmation__confirmed_by")
+                .select_related("employee", "employee__office")
+                .prefetch_related(
+                    "items",
+                    "supervisor_confirmation",
+                    "supervisor_confirmation__confirmed_by",
+                )
                 .filter(employee=emp, date=d)
                 .first()
-                )
+            )
+
             temperature = None
             symptoms = False
             comment = ""
@@ -105,7 +132,11 @@ class DashboardView(APIView):
                             temperature = float(it.value)
                         except Exception:
                             temperature = it.value
-                    if it.category in ("no_health_issues", "family_no_symptoms", "no_respiratory_symptoms") and not it.is_normal:
+                    if (
+                        it.category
+                        in ("no_health_issues", "family_no_symptoms", "no_respiratory_symptoms")
+                        and not it.is_normal
+                    ):
                         symptoms = True
                         if it.comment:
                             comment = (comment + " / " if comment else "") + it.comment
@@ -120,24 +151,34 @@ class DashboardView(APIView):
                 else:
                     status_jp = "-"
 
+            # supervisor_confirmation の存在判定は *_id を使うと安全
+            sup_confirmed = bool(rec and getattr(rec, "supervisor_confirmation_id", None))
+            sup_code = (
+                rec.supervisor_confirmation.confirmed_by.code
+                if sup_confirmed and getattr(rec.supervisor_confirmation, "confirmed_by_id", None)
+                else None
+            )
+
+            record_id = rec.id if rec else None
+
             rows.append(
                 {
-                    "id": emp.code,
+                    # 画面用の一意ID（date-employeeCode）
+                    "id": f"{d.isoformat()}-{emp.code}",
+                    # APIトグル用に Record PK を返す（null の場合は未作成）
+                    "recordId": record_id,
+                    # 参照性高めるための明示フィールド
+                    "employeeCode": emp.code,
                     "name": emp.name,
                     "arrivalRegistered": arrival,
                     "departureRegistered": departure,
                     "temperature": temperature,
                     "symptoms": symptoms,
                     "comment": comment,
-                    # サーバ確定値
                     "isOff": is_off,
                     "statusJp": status_jp,
-                    # 確認状態（管理画面向け）
-                    "supervisorConfirmed": bool(rec and getattr(rec, "supervisor_confirmation", None)),
-                    "supervisorCode": (
-                        getattr(getattr(getattr(rec, "supervisor_confirmation", None), "confirmed_by", None), "code", None)
-                        if rec else None
-                    ),
+                    "supervisorConfirmed": sup_confirmed,
+                    "supervisorCode": sup_code,
                 }
             )
         return Response({"rows": rows}, status=status.HTTP_200_OK)
@@ -161,11 +202,17 @@ class SubmitRecordView(APIView):
         employee_code = data.get("employee_code")
         date_str = data.get("date")
         if not employee_code or not date_str:
-            return Response({"detail": "employee_code と date は必須です。"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "employee_code と date は必須です。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         d = parse_date(date_str)
         if not d:
-            return Response({"detail": "date は YYYY-MM-DD 形式で指定してください。"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "date は YYYY-MM-DD 形式で指定してください。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             emp = Employee.objects.get(code=employee_code)
@@ -173,9 +220,9 @@ class SubmitRecordView(APIView):
             return Response({"detail": "employee not found"}, status=status.HTTP_400_BAD_REQUEST)
 
         has_start_key = "work_start_time" in data
-        has_end_key   = "work_end_time" in data
+        has_end_key = "work_end_time" in data
         work_start_time = data.get("work_start_time", None)
-        work_end_time   = data.get("work_end_time", None)
+        work_end_time = data.get("work_end_time", None)
 
         supervisor_code = data.get("supervisor_code")
         supervisor = None
@@ -210,7 +257,7 @@ class SubmitRecordView(APIView):
             # work_type 反映（offなら出退勤をクリア）
             if decided_work_type in ("off", "work"):
                 rec.work_type = decided_work_type
-                rec.is_off = (decided_work_type == "off")
+                rec.is_off = decided_work_type == "off"
                 if rec.is_off:
                     rec.work_start_time = None
                     rec.work_end_time = None
@@ -265,7 +312,7 @@ class SubmitRecordView(APIView):
                 }
                 RecordItem.objects.update_or_create(record=rec, category=cat, defaults=defaults)
 
-            # ★ 責任者確認：confirmed_by/confirmed_at を保存
+            # ★ 責任者確認：confirmed_by/confirmed_at を保存（不要なら supervisor_code を送らない）
             supervisor_confirmed = data.get("supervisor_confirmed", None)
             if supervisor_confirmed is not None:
                 if supervisor_confirmed:
@@ -312,8 +359,10 @@ class CalendarStatusView(APIView):
                 Q(work_type="work", work_end_time__isnull=False)
                 | Q(is_off=True, item_count__gt=0)
                 | Q(work_type="off", item_count__gt=0)
-                | (Q(work_type__isnull=True, is_off__isnull=True)
-                   & Q(work_start_time__isnull=True, work_end_time__isnull=True, item_count__gt=0))
+                | (
+                    Q(work_type__isnull=True, is_off__isnull=True)
+                    & Q(work_start_time__isnull=True, work_end_time__isnull=True, item_count__gt=0)
+                )
             )
             .values_list("date", flat=True)
         )
@@ -324,10 +373,11 @@ class CalendarStatusView(APIView):
 # =========================
 # 確認トグル（管理画面向け）
 # =========================
+
 class RecordSupervisorConfirmView(APIView):
     """
-    POST   /api/records/<id>/supervisor_confirm/   -> 確認ON（行を作る/更新）
-    DELETE /api/records/<id>/supervisor_confirm/   -> 確認OFF（行を削除）
+    POST   /api/records/<id>/supervisor_confirm/ -> 確認ON（行を作る/更新）
+    DELETE /api/records/<id>/supervisor_confirm/ -> 確認OFF（行を削除）
     """
     permission_classes = [permissions.AllowAny]
 
