@@ -1,5 +1,8 @@
 # hygiene/serializers.py
+from typing import Any, Dict
 from rest_framework import serializers
+from django.db.models import Q
+
 from .models import Office, Employee, Record, RecordItem, SupervisorConfirmation
 
 # ===== write（/api/records/submit 用）=====
@@ -20,18 +23,93 @@ class RecordWriteSerializer(serializers.Serializer):
     work_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # "off" | "work"
     items = RecordItemWriteSerializer(many=True, required=False)
 
-# ===== read =====
+# ===== Office =====
 class OfficeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Office
         fields = "__all__"
 
+# オフィス一覧（安全に最小限）
+class OfficeListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Office
+        fields = ("id", "code", "name")
+
+# ===== Employee（読み取り）=====
 class EmployeeSerializer(serializers.ModelSerializer):
     office_name = serializers.CharField(source="office.name", read_only=True)
+
     class Meta:
         model = Employee
-        fields = ("id", "code", "name", "office", "office_name")
+        fields = ("id", "code", "name", "office", "office_name", "position")
+        read_only_fields = ("office_name",)
 
+# ===== Employee（書き込み：POST/PATCH）=====
+class EmployeeWriteSerializer(serializers.ModelSerializer):
+    office_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = Employee
+        fields = ("id", "code", "name", "office", "office_name", "position")
+        extra_kwargs = {
+            "office": {"required": False, "allow_null": True},
+            "position": {"required": False, "allow_null": True},
+            "code": {"required": False, "allow_null": True},
+            "name": {"required": False, "allow_null": True},
+        }
+
+    JP_TO_CODE = {
+        "一般": "general",
+        "副所長": "deputy_manager",   # ← ここは deputy_manager
+        "所長": "branch_admin",
+        "本部": "manager",
+    }
+
+    def validate(self, attrs):
+        # ---- write_only の office_name を先に取り出して消す（重要）----
+        office_name_in = attrs.pop("office_name", None)
+        if office_name_in is None:
+            office_name_in = (self.initial_data.get("office_name") or "").strip()
+        else:
+            office_name_in = str(office_name_in).strip()
+
+        # ---- 空文字の正規化（partial_update で空が来たら無視）----
+        for k in ("office", "name", "code", "position"):
+            if k in attrs and (attrs[k] == "" or attrs[k] is None):
+                attrs.pop(k)
+
+        # ---- office_name -> office（office 未指定なら名前で解決）----
+        if "office" not in attrs and office_name_in:
+            try:
+                attrs["office"] = Office.objects.get(name=office_name_in)
+            except Office.DoesNotExist:
+                raise serializers.ValidationError({"office_name": "該当する営業所が見つかりません。"})
+
+        # ---- position 日本語 -> コード ----
+        if "position" in attrs and attrs["position"] is not None:
+            pos = str(attrs["position"])
+            if pos not in dict(Employee.Position.choices):
+                mapped = self.JP_TO_CODE.get(pos)
+                if not mapped:
+                    raise serializers.ValidationError(
+                        {"position": "position は '一般' / '副所長' / '所長' / '本部' または対応コードを指定してください。"}
+                    )
+                attrs["position"] = mapped
+
+        # ---- code の軽バリデーション（送られてきた時だけ）----
+        if "code" in attrs:
+            code = str(attrs["code"]).strip()
+            if not code.isdigit() or len(code) != 6:
+                raise serializers.ValidationError({"code": "個人コードは6桁の数字で入力してください。"})
+            attrs["code"] = code
+
+        # ---- name のトリム（送られてきた時だけ）----
+        if "name" in attrs:
+            attrs["name"] = str(attrs["name"]).strip()
+
+        return attrs
+
+# ===== RecordItem（読み取り）=====
 class RecordItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = RecordItem
@@ -67,10 +145,11 @@ class RecordItemSerializer(serializers.ModelSerializer):
                 pass
         return attrs
 
+# ===== Record（読み取り）=====
 class RecordSerializer(serializers.ModelSerializer):
     items = RecordItemSerializer(many=True, read_only=True)
     supervisor_code = serializers.SerializerMethodField()
-    supervisor_confirmed = serializers.SerializerMethodField()  # ★ 追加
+    supervisor_confirmed = serializers.SerializerMethodField()
     is_off = serializers.BooleanField(read_only=True)
     work_type = serializers.CharField(read_only=True)
     status = serializers.SerializerMethodField()
@@ -95,21 +174,15 @@ class RecordSerializer(serializers.ModelSerializer):
         return getattr(getattr(obj, "supervisor_selected", None), "code", None)
 
     def get_supervisor_confirmed(self, obj) -> bool:
-        """
-        ViewSet 側の annotate(supervisor_confirmed=...) があればそれを返す。
-        無ければ OneToOne の存在で判定（prefetch 済みなら追加クエリなし）。
-        """
         annotated = getattr(obj, "supervisor_confirmed", None)
         if annotated is not None:
             return bool(annotated)
         try:
-            # 逆参照が無ければ RelatedObjectDoesNotExist が飛ぶことがあるので握りつぶす
-            _ = obj.supervisor_confirmation
+            _ = obj.supervisor_confirmation  # 関連があれば True
             return True
         except Exception:
             return False
 
-    # ---- ステータス ----
     def _status_code(self, obj) -> str:
         if getattr(obj, "is_off", False) or getattr(obj, "work_type", None) == "off":
             return "off"
@@ -127,6 +200,7 @@ class RecordSerializer(serializers.ModelSerializer):
             self._status_code(obj), "-"
         )
 
+# ===== SupervisorConfirmation =====
 class SupervisorConfirmationSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupervisorConfirmation

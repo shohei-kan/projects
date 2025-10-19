@@ -2,6 +2,7 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Q, F
 
+
 class Category(models.TextChoices):
     TEMPERATURE = "temperature", "temperature"
     NO_HEALTH_ISSUES = "no_health_issues", "no_health_issues"
@@ -14,6 +15,7 @@ class Category(models.TextChoices):
     NO_WORK_ILLNESS = "no_work_illness", "no_work_illness"
     PROPER_HANDWASHING = "proper_handwashing", "proper_handwashing"
     WORK_TYPE = "work_type", "work_type"  # 文字値(off/work)を保存
+
 
 class Office(models.Model):
     code = models.CharField(
@@ -39,7 +41,14 @@ class Office(models.Model):
     def __str__(self):
         return f"{self.code} {self.name}"
 
+
 class Employee(models.Model):
+    class Position(models.TextChoices):
+        GENERAL = "general", "一般"
+        DEPUTY_MANAGER = "deputy_manager", "副所長"
+        BRANCH_ADMIN = "branch_admin", "所長"
+        MANAGER = "manager", "本部"  # 本部（HQ）
+
     code = models.CharField(
         max_length=20, unique=True, null=True, blank=True, db_index=True,
         validators=[RegexValidator(r"^[0-9]{6}$")],
@@ -48,10 +57,20 @@ class Employee(models.Model):
     name = models.CharField(max_length=100)
     office = models.ForeignKey(Office, on_delete=models.PROTECT, related_name="employees")
 
+    # ★ 追加：役職（デフォルト=一般）
+    position = models.CharField(
+        max_length=32,
+        choices=Position.choices,
+        default=Position.GENERAL,
+        db_index=True,
+        help_text="役職コード（general / deputy_manager / branch_admin / manager）",
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=["code"], name="emp_code_idx"),
             models.Index(fields=["office", "name"], name="emp_office_name_idx"),
+            models.Index(fields=["office", "position"], name="emp_office_position_idx"),
         ]
 
     def save(self, *args, **kwargs):
@@ -59,18 +78,23 @@ class Employee(models.Model):
             self.code = self.code.strip().upper()
         super().save(*args, **kwargs)
 
+    @property
+    def position_jp(self) -> str:
+        return dict(self.Position.choices).get(self.position, "一般")
+
     def __str__(self):
         return f"{self.code} {self.name}"
+
 
 class Record(models.Model):
     class WorkType(models.TextChoices):
         WORK = "work", "work"
-        OFF  = "off",  "off"
+        OFF = "off", "off"
 
     date = models.DateField()
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="records")
     work_start_time = models.TimeField(null=True, blank=True)
-    work_end_time   = models.TimeField(null=True, blank=True)
+    work_end_time = models.TimeField(null=True, blank=True)
 
     # DBで確定する休み判定
     work_type = models.CharField(max_length=8, choices=WorkType.choices, null=True, blank=True, db_index=True)
@@ -112,11 +136,12 @@ class Record(models.Model):
     def __str__(self):
         return f"{self.date} - {self.employee.code}"
 
+
 class RecordItem(models.Model):
     record = models.ForeignKey(Record, on_delete=models.CASCADE, related_name="items")
     category = models.CharField(max_length=40, choices=Category.choices)
     is_normal = models.BooleanField(default=True)
-    value = models.FloatField(null=True, blank=True)                 # 数値（体温など）
+    value = models.FloatField(null=True, blank=True)  # 数値（体温など）
     value_text = models.CharField(max_length=100, null=True, blank=True, db_index=True)  # 文字（work_type等）
     comment = models.TextField(blank=True)
 
@@ -131,6 +156,7 @@ class RecordItem(models.Model):
 
     def __str__(self):
         return f"{self.record_id} {self.category} ({'OK' if self.is_normal else 'NG'})"
+
 
 class SupervisorConfirmation(models.Model):
     record = models.OneToOneField(Record, on_delete=models.CASCADE, related_name="supervisor_confirmation")

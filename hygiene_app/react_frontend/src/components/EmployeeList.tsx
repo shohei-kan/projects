@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Search, Plus, Edit, Trash2, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,9 +24,16 @@ import { Label } from '@/components/ui/label'
 // セッション
 import { loadSession } from '@/lib/session'
 
-// モック & 型
-import { mockEmployees, mockBranches } from '@/data'
-import type { Employee as MockEmployee } from '@/data'
+// API アダプター
+import {
+  getOfficeOptionsForRole,
+  getEmployeesByOfficeName,
+  createEmployee,
+  updateEmployee,
+  deleteEmployee,
+  type EmployeeRow,
+  type PositionJP,
+} from '@/lib/employeesAdapter'
 
 /* =========================
    UI 共通クラス
@@ -45,29 +52,11 @@ const panelClass =
 /* =========================
    型
    ========================= */
-type Position = '一般' | '所長' | '副所長' | '本部'
-type EmployeeRow = {
-  id: string
-  name: string
-  personalCode: string
-  office: string
-  position: Position
-}
+type Position = PositionJP
 export interface EmployeeListProps {
   onBack: () => void
 }
-type Option = { value: string; label: string };
-
-/* =========================
-   変換ユーティリティ
-   ========================= */
-const toPositionLabel = (pos: MockEmployee['position']): Position => {
-  switch (pos) {
-    case 'general': return '一般'
-    case 'branch_admin': return '所長'
-    case 'manager': return '本部'
-  }
-}
+type Option = { value: string; label: string }
 
 /* =========================
    本体
@@ -76,57 +65,83 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
   const session = loadSession()
   const isHQ = session?.user.role === 'hq_admin'
   const myBranchCode = isHQ ? '' : (session?.user.branchCode ?? '')
-  const myOfficeName = useMemo(() => {
-    const b = mockBranches.find((x) => x.code === myBranchCode)
-    return b ? b.name : ''
-  }, [myBranchCode])
 
-  // 初期データ：本部=全社 / 営業所管理者=自所のみ
-  const initialEmployees: EmployeeRow[] = useMemo(() => {
-    const src = isHQ ? mockEmployees : mockEmployees.filter(e => e.branchCode === myBranchCode)
-    const branchNameFromCode = (code: string) => mockBranches.find((x) => x.code === code)?.name ?? code
-    return src.map((m) => ({
-      id: `emp-${m.code}`,
-      name: m.name,
-      personalCode: m.code,
-      office: branchNameFromCode(m.branchCode),
-      position: toPositionLabel(m.position),
-    }))
+  /* ---------- オフィス選択肢の取得 ---------- */
+  const [officeOptions, setOfficeOptions] = useState<Option[]>([])
+  const [selectedOffice, setSelectedOffice] = useState<'all' | string>(isHQ ? 'all' : '')
+  const [loadingOffices, setLoadingOffices] = useState(false)
+
+  useEffect(() => {
+    ;(async () => {
+      setLoadingOffices(true)
+      try {
+        const opts = await getOfficeOptionsForRole(!!isHQ, myBranchCode)
+        setOfficeOptions(opts)
+        // 非HQは自所を即選択、HQは "all"
+        if (!isHQ && opts[0]) setSelectedOffice(opts[0].value as string)
+      } finally {
+        setLoadingOffices(false)
+      }
+    })()
   }, [isHQ, myBranchCode])
 
-  const [employees, setEmployees] = useState<EmployeeRow[]>(initialEmployees)
-
-  // 営業所フィルター選択肢：本部=全社 / 営業所=自所のみ
-  const officeOptions = useMemo<Option[]>(() => {
-  if (isHQ) {
-    const officeNames = Array.from(new Set(mockBranches.map((b) => b.name)));
-    return [{ value: 'all', label: '全営業所' }, ...officeNames.map((n) => ({ value: n, label: n }))];
+  /* ---------- 従業員一覧の取得 ---------- */
+  const [employees, setEmployees] = useState<EmployeeRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const reload = async (office: 'all' | string) => {
+    setLoading(true)
+    try {
+      const rows = await getEmployeesByOfficeName(office === 'all' ? undefined : office)
+      setEmployees(rows)
+    } finally {
+      setLoading(false)
+    }
   }
-  // 営業所管理者は自所のみ／なければ空配列（any禁止）
-  return myOfficeName ? [{ value: myOfficeName, label: myOfficeName }] : [];
-}, [isHQ, myOfficeName]);
 
+  // 初回＆オフィス変更でロード
+  useEffect(() => {
+    if (!isHQ && !selectedOffice) return
+    reload(selectedOffice)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOffice, isHQ])
 
-  const [selectedOffice, setSelectedOffice] = useState<'all' | string>(isHQ ? 'all' : (myOfficeName || 'all'))
+  /* ---------- 検索・フィルタ ---------- */
   const [selectedPosition, setSelectedPosition] = useState<'all' | Position>('all')
-
-  // 検索
   const [nameQuery, setNameQuery] = useState('')
   const [codeQuery, setCodeQuery] = useState('')
 
-  // モーダル
+  const filteredEmployees = useMemo(() => {
+    return employees.filter((e) => {
+      if (selectedOffice !== 'all' && e.office !== selectedOffice) return false
+      if (selectedPosition !== 'all' && e.position !== selectedPosition) return false
+      if (nameQuery && !e.name.includes(nameQuery)) return false
+      if (codeQuery && !e.personalCode.includes(codeQuery)) return false
+      return true
+    })
+  }, [employees, selectedOffice, selectedPosition, nameQuery, codeQuery])
+
+  /* ---------- モーダル状態 ---------- */
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState<EmployeeRow | null>(null)
   const [newEmployee, setNewEmployee] = useState<Partial<EmployeeRow>>({
     name: '',
     personalCode: '',
-    office: isHQ ? '' : myOfficeName,
+    office: isHQ ? '' : selectedOffice,
     position: '一般',
   })
 
-  // バリデーション
+  useEffect(() => {
+    // 非HQの新規登録フォームは常に自所に合わせる
+    if (!isHQ) {
+      setNewEmployee((p) => ({ ...p, office: selectedOffice }))
+    }
+  }, [isHQ, selectedOffice])
+
+  /* ---------- バリデーション ---------- */
   type AddErrors = { name?: string; personalCode?: string; office?: string; position?: string }
+  type EditErrors = { name?: string; personalCode?: string; office?: string; position?: string }
+
   const validateNewEmployee = (e: Partial<EmployeeRow>, existing: EmployeeRow[]): AddErrors => {
     const errors: AddErrors = {}
     if (!e.name || !e.name.trim()) errors.name = '氏名は必須です'
@@ -139,7 +154,7 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
     if (!e.position) errors.position = '役職を選択してください'
     return errors
   }
-  type EditErrors = { name?: string; personalCode?: string; office?: string; position?: string }
+
   const validateEditEmployee = (e: EmployeeRow | null, existing: EmployeeRow[]): EditErrors => {
     const errors: EditErrors = {}
     if (!e) return errors
@@ -158,17 +173,7 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
   const editErrors = useMemo(() => validateEditEmployee(editingEmployee, employees), [editingEmployee, employees])
   const canSubmitEdit = !!editingEmployee && Object.keys(editErrors).length === 0
 
-  // 絞り込み
-  const filteredEmployees = useMemo(() => {
-    return employees.filter((e) => {
-      if (selectedOffice !== 'all' && e.office !== selectedOffice) return false
-      if (selectedPosition !== 'all' && e.position !== selectedPosition) return false
-      if (nameQuery && !e.name.includes(nameQuery)) return false
-      if (codeQuery && !e.personalCode.includes(codeQuery)) return false
-      return true
-    })
-  }, [employees, selectedOffice, selectedPosition, nameQuery, codeQuery])
-
+  /* ---------- 役職バッジ ---------- */
   const getPositionBadge = (position: Position) => {
     const variants: Record<Position, string> = {
       本部: 'bg-violet-50 text-violet-700 border border-violet-200',
@@ -183,21 +188,23 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
     )
   }
 
-  /* ---------- CRUD ---------- */
-  const handleAddEmployee = () => {
+  /* ---------- CRUD（API） ---------- */
+  const handleAddEmployee = async () => {
     const errors = validateNewEmployee(newEmployee, employees)
     if (Object.keys(errors).length > 0) return
 
-    const row: EmployeeRow = {
-      id: `emp-${Date.now()}`,
+    const created = await createEmployee({
+      code: newEmployee.personalCode!.trim(),
       name: newEmployee.name!.trim(),
-      personalCode: newEmployee.personalCode!.trim(),
-      // 営業所管理者は自所で固定
-      office: isHQ ? newEmployee.office! : myOfficeName,
-      position: (newEmployee.position ?? '一般') as Position,
-    }
-    setEmployees((prev) => [...prev, row])
-    setNewEmployee({ name: '', personalCode: '', office: isHQ ? '' : myOfficeName, position: '一般' })
+      office_name: isHQ ? newEmployee.office! : selectedOffice,
+      position:
+        newEmployee.position === '所長' ? 'branch_admin'
+      : newEmployee.position === '副所長' ? 'deputy_manager'
+      : newEmployee.position === '本部' ? 'manager'
+      : 'general'
+    })
+    setEmployees((prev) => [...prev, created])
+    setNewEmployee({ name: '', personalCode: '', office: isHQ ? '' : selectedOffice, position: '一般' })
     setIsAddModalOpen(false)
   }
 
@@ -206,26 +213,33 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
     setIsEditModalOpen(true)
   }
 
-  const handleUpdateEmployee = () => {
+  const handleUpdateEmployee = async () => {
     if (!editingEmployee) return
     const errs = validateEditEmployee(editingEmployee, employees)
     if (Object.keys(errs).length > 0) return
 
-    const updated: EmployeeRow = {
-      ...editingEmployee,
+    const updated = await updateEmployee(editingEmployee.id, {
+      code: editingEmployee.personalCode.trim(),
       name: editingEmployee.name.trim(),
-      personalCode: editingEmployee.personalCode.trim(),
-      // 営業所管理者は自所で固定
-      office: isHQ ? editingEmployee.office : myOfficeName,
-    }
+      office_name: isHQ ? editingEmployee.office : selectedOffice,
+      position:
+      editingEmployee.position === '所長' ? 'branch_admin'
+      : editingEmployee.position === '副所長' ? 'deputy_manager'
+      : editingEmployee.position === '本部' ? 'manager'
+      : 'general'
+    })
     setEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)))
     setEditingEmployee(null)
     setIsEditModalOpen(false)
   }
 
-  const handleDeleteEmployee = (employeeId: string) => {
+  const handleDeleteEmployee = async (employeeId: string) => {
+    await deleteEmployee(employeeId)
     setEmployees((prev) => prev.filter((e) => e.id !== employeeId))
   }
+
+  /* ---------- 表示用 ---------- */
+  const officeSubtitle = isHQ ? '全営業所' : (selectedOffice || '（営業所未設定）')
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -239,7 +253,9 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
             </Button>
             <div>
               <h1 className="text-2xl font-semibold text-gray-900">従業員一覧</h1>
-              <p className="mt-1 text-sm text-gray-600">{isHQ ? '全営業所' : (myOfficeName || '（営業所未設定）')}</p>
+              <p className="mt-1 text-sm text-gray-600">
+                {loadingOffices ? '営業所を読み込み中…' : officeSubtitle}
+              </p>
             </div>
           </div>
 
@@ -247,7 +263,7 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
             open={isAddModalOpen}
             onOpenChange={(open) => {
               setIsAddModalOpen(open)
-              if (!open) setNewEmployee({ name: '', personalCode: '', office: isHQ ? '' : myOfficeName, position: '一般' })
+              if (!open) setNewEmployee({ name: '', personalCode: '', office: isHQ ? '' : selectedOffice, position: '一般' })
             }}
           >
             <DialogTrigger asChild>
@@ -377,7 +393,11 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
               {/* 営業所フィルター */}
               <div className="space-y-2 min-w-0">
                 <Label>営業所フィルター</Label>
-                <Select value={selectedOffice} onValueChange={(v) => setSelectedOffice(v)} disabled={!isHQ}>
+                <Select
+                  value={selectedOffice}
+                  onValueChange={(v) => setSelectedOffice(v)}
+                  disabled={!isHQ || loadingOffices}
+                >
                   <SelectTrigger className={selectTrigger}>
                     <SelectValue placeholder="全営業所" />
                   </SelectTrigger>
@@ -443,7 +463,9 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
 
         {/* Results summary */}
         <div className="flex items-center justify-between text-sm">
-          <span className="text-gray-500">{filteredEmployees.length}件の従業員が見つかりました</span>
+          <span className="text-gray-500">
+            {loading ? '読み込み中…' : `${filteredEmployees.length}件の従業員が見つかりました`}
+          </span>
           <span className="text-xs text-gray-400">最終更新: {new Date().toLocaleString('ja-JP')}</span>
         </div>
 
@@ -537,7 +559,7 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
               </Table>
             </div>
 
-            {filteredEmployees.length === 0 && (
+            {filteredEmployees.length === 0 && !loading && (
               <div className="py-12 text-center text-gray-500">
                 <p>条件に一致する従業員が見つかりませんでした</p>
               </div>
