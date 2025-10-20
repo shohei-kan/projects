@@ -36,6 +36,24 @@ import {
 } from '@/lib/employeesAdapter'
 
 /* =========================
+   入力正規化ヘルパー
+   ========================= */
+// 全角数字 → 半角数字
+const normalizeDigits = (s: string) =>
+  (s ?? '').replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+
+// 氏名のスペース統一（全角→半角、連続は1個、前後トリム）
+const unifyNameSpacing = (s: string) =>
+  (s ?? '')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+    // 入力正規化ヘルパーの下あたりに追加
+const formatDisplayName = (s: string) =>
+  (s ?? '').replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim()
+
+/* =========================
    UI 共通クラス
    ========================= */
 const CONTROL_H = '!h-8 !min-h-8'
@@ -144,9 +162,10 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
 
   const validateNewEmployee = (e: Partial<EmployeeRow>, existing: EmployeeRow[]): AddErrors => {
     const errors: AddErrors = {}
-    if (!e.name || !e.name.trim()) errors.name = '氏名は必須です'
-    else if (e.name.trim().length < 2) errors.name = '2文字以上で入力してください'
-    const code = (e.personalCode ?? '').trim()
+    const nameClean = unifyNameSpacing(e.name ?? '')
+    if (!nameClean) errors.name = '氏名は必須です'
+    else if (nameClean.length < 2) errors.name = '2文字以上で入力してください'
+    const code = normalizeDigits(e.personalCode ?? '').replace(/\D/g, '').slice(0, 6)
     if (!code) errors.personalCode = '個人コードは必須です'
     else if (!/^\d{6}$/.test(code)) errors.personalCode = '6桁の数字で入力してください'
     else if (existing.some((emp) => emp.personalCode === code)) errors.personalCode = 'この個人コードは既に使われています'
@@ -158,9 +177,10 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
   const validateEditEmployee = (e: EmployeeRow | null, existing: EmployeeRow[]): EditErrors => {
     const errors: EditErrors = {}
     if (!e) return errors
-    if (!e.name || !e.name.trim()) errors.name = '氏名は必須です'
-    else if (e.name.trim().length < 2) errors.name = '2文字以上で入力してください'
-    const code = (e.personalCode ?? '').trim()
+    const nameClean = unifyNameSpacing(e.name ?? '')
+    if (!nameClean) errors.name = '氏名は必須です'
+    else if (nameClean.length < 2) errors.name = '2文字以上で入力してください'
+    const code = normalizeDigits(e.personalCode ?? '').replace(/\D/g, '').slice(0, 6)
     if (!/^\d{6}$/.test(code)) errors.personalCode = '6桁の数字で入力してください'
     else if (existing.some((emp) => emp.personalCode === code && emp.id !== e.id)) errors.personalCode = 'この個人コードは既に使われています'
     if (!e.office) errors.office = '営業所を選択してください'
@@ -193,16 +213,19 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
     const errors = validateNewEmployee(newEmployee, employees)
     if (Object.keys(errors).length > 0) return
 
+    // 最終整形
+    const codeClean = normalizeDigits(newEmployee.personalCode!).replace(/\D/g, '').slice(0, 6)
+    const nameClean = unifyNameSpacing(newEmployee.name!)
+
     const created = await createEmployee({
-      code: newEmployee.personalCode!.trim(),
-      name: newEmployee.name!.trim(),
+      code: codeClean,
+      name: nameClean,
       office_name: isHQ ? newEmployee.office! : selectedOffice,
       position:
-        newEmployee.position === '所長' ? 'branch_admin'
-      : newEmployee.position === '副所長' ? 'deputy_manager'
-      : newEmployee.position === '本部' ? 'manager'
-      : 'general'
-    })
+newEmployee.position === '所長' ? 'branch_admin'
+: newEmployee.position === '副所長' ? 'deputy_manager'
+: newEmployee.position === '本部' ? 'manager'
+: 'general'    })
     setEmployees((prev) => [...prev, created])
     setNewEmployee({ name: '', personalCode: '', office: isHQ ? '' : selectedOffice, position: '一般' })
     setIsAddModalOpen(false)
@@ -218,16 +241,19 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
     const errs = validateEditEmployee(editingEmployee, employees)
     if (Object.keys(errs).length > 0) return
 
+    // 最終整形
+    const codeClean = normalizeDigits(editingEmployee.personalCode).replace(/\D/g, '').slice(0, 6)
+    const nameClean = unifyNameSpacing(editingEmployee.name)
+
     const updated = await updateEmployee(editingEmployee.id, {
-      code: editingEmployee.personalCode.trim(),
-      name: editingEmployee.name.trim(),
+      code: codeClean,
+      name: nameClean,
       office_name: isHQ ? editingEmployee.office : selectedOffice,
       position:
-      editingEmployee.position === '所長' ? 'branch_admin'
-      : editingEmployee.position === '副所長' ? 'deputy_manager'
-      : editingEmployee.position === '本部' ? 'manager'
-      : 'general'
-    })
+editingEmployee.position === '所長' ? 'branch_admin'
+: editingEmployee.position === '副所長' ? 'deputy_manager'
+: editingEmployee.position === '本部' ? 'manager'
+: 'general'    })
     setEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)))
     setEditingEmployee(null)
     setIsEditModalOpen(false)
@@ -293,7 +319,14 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                     id="add-name"
                     placeholder="従業員名を入力"
                     value={newEmployee.name || ''}
-                    onChange={(e) => setNewEmployee((p) => ({ ...p, name: e.target.value }))}
+                    onChange={(e) => {
+                      const v = unifyNameSpacing(e.target.value)
+                      setNewEmployee((p) => ({ ...p, name: e.target.value }))
+                    }}
+                    onBlur={(e) => {
+                      const v = unifyNameSpacing(e.target.value)
+                      setNewEmployee((p) => ({ ...p, name: v }))
+                    }}
                     className={inputPlain + (addErrors.name ? ' border-red-300 focus-visible:ring-red-200' : '')}
                   />
                   {addErrors.name && <p className="mt-1 text-xs text-red-600">{addErrors.name}</p>}
@@ -307,7 +340,8 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                     placeholder="6桁の個人コード"
                     value={newEmployee.personalCode || ''}
                     onChange={(e) => {
-                      const digits = e.target.value.replace(/\D/g, '').slice(0, 6)
+                      const half = normalizeDigits(e.target.value)
+                      const digits = half.replace(/\D/g, '').slice(0, 6)
                       setNewEmployee((p) => ({ ...p, personalCode: digits }))
                     }}
                     maxLength={6}
@@ -585,7 +619,12 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                 <Input
                   id="edit-name"
                   value={editingEmployee?.name ?? ''}
-                  onChange={(e) => setEditingEmployee((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                  onChange={(e) =>
+                    setEditingEmployee((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                  }
+                  onBlur={(e) =>
+                    setEditingEmployee((prev) => (prev ? { ...prev, name: unifyNameSpacing(e.target.value) } : prev))
+                  }
                   className={inputPlain + (editErrors.name ? ' border-red-300 focus-visible:ring-red-200' : '')}
                 />
                 {editErrors.name && <p className="mt-1 text-xs text-red-600">{editErrors.name}</p>}
@@ -598,9 +637,12 @@ export function EmployeeList({ onBack }: EmployeeListProps) {
                   id="edit-code"
                   value={editingEmployee?.personalCode ?? ''}
                   onChange={(e) =>
-                    setEditingEmployee((prev) =>
-                      prev ? { ...prev, personalCode: e.target.value.replace(/\D/g, '').slice(0, 6) } : prev
-                    )
+                    setEditingEmployee((prev) => {
+                      if (!prev) return prev
+                      const half = normalizeDigits(e.target.value)
+                      const digits = half.replace(/\D/g, '').slice(0, 6)
+                      return { ...prev, personalCode: digits }
+                    })
                   }
                   maxLength={6}
                   className={inputPlain + (editErrors.personalCode ? ' border-red-300 focus-visible:ring-red-200' : '')}
