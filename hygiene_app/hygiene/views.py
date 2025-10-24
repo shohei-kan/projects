@@ -1,7 +1,7 @@
 # hygiene/views.py
 from datetime import date as _date
 from django.db import transaction,IntegrityError,models
-from django.db.models import Q, Count, Exists, OuterRef
+from django.db.models import Q, Count, Exists, OuterRef,Min, Max
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -404,3 +404,33 @@ class RecordClearView(APIView):
         ])
 
         return Response({"status": "ok"}, status=status.HTTP_200_OK)
+    
+class EmployeeActiveRangeView(APIView):
+    """
+    GET /api/employees/<pk>/active_range/
+    もしくは GET /api/employees/active_range/?employee_id=123 や ?employee_code=100001
+    レコードが初めて登録された年月(YYYY-MM) 〜 今日(YYYY-MM) を返す
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk: int | None = None):
+        emp_id = pk or request.query_params.get("employee_id")
+        emp_code = request.query_params.get("employee_code")
+
+        if emp_code and not emp_id:
+            emp = get_object_or_404(Employee, code=str(emp_code))
+        else:
+            if not emp_id:
+                return Response({"detail": "employee_id または employee_code を指定してください。"}, status=400)
+            emp = get_object_or_404(Employee, pk=emp_id)
+
+        # その従業員の最初の記録日を取得（なければ今日）
+        agg = Record.objects.filter(employee=emp).aggregate(first=Min("date"))
+        start = agg["first"] or timezone.localdate()
+        end = timezone.localdate()
+        if start > end:
+            start = end
+
+        startYm = f"{start.year:04d}-{start.month:02d}"
+        endYm = f"{end.year:04d}-{end.month:02d}"
+        return Response({"startYm": startYm, "endYm": endYm})

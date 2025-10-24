@@ -18,7 +18,6 @@ import { TODAY_STR } from '@/data/mockDate'
 import { loadSession } from '@/lib/session'
 
 import {
-  getDailyRows,
   getDailyRowsAllEmployees,
   getOfficeNames,
   getEmployeesForOffice,
@@ -28,6 +27,7 @@ import {
   patchSupervisorConfirm,
   filterRowsByOffice,
   getMonthRowsByEmployeeId,
+  getEmployeeActiveRange,   // ★ active_range 取得
   type HygieneRecordRow,
   type EmployeeLite,
   clearDailyRecord,
@@ -59,6 +59,36 @@ const statusBadge = (s: HygieneRecordRow['status']) => {
   return <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 ${map[s]}`}>{s}</Badge>
 }
 
+/* ========= ヘルパ ========= */
+// "YYYY-MM" から "YYYY-MM" までを昇順で列挙（両端含む）
+const enumerateYm = (startYm?: string | null, endYm?: string | null) => {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const today = new Date()
+  const curYm = `${today.getFullYear()}-${pad(today.getMonth() + 1)}`
+  const s = (startYm && /^\d{4}-\d{2}$/.test(startYm)) ? startYm : curYm
+  const e = (endYm && /^\d{4}-\d{2}$/.test(endYm)) ? endYm : curYm
+  let [sy, sm] = s.split('-').map(Number)
+  const [ey, em] = e.split('-').map(Number)
+  const out: string[] = []
+  while (sy < ey || (sy === ey && sm <= em)) {
+    out.push(`${sy}-${pad(sm)}`)
+    sm++
+    if (sm === 13) { sm = 1; sy++ }
+  }
+  return out
+}
+
+// 月の全日リスト（UTCで安全に1日ずつ）
+const eachDay = (y: number, m: number) => {
+  const first = new Date(Date.UTC(y, m - 1, 1))
+  const nextFirst = new Date(Date.UTC(y, m, 1))
+  const days: string[] = []
+  for (let d = new Date(first); d < nextFirst; d.setUTCDate(d.getUTCDate() + 1)) {
+    days.push(d.toISOString().slice(0, 10))
+  }
+  return days
+}
+
 export interface HygieneManagementProps {
   onEmployeeListClick: () => void
   onBackToDashboard: () => void
@@ -86,8 +116,8 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
     })()
   }, [isHQ, myBranchCode])
 
+  // 日次用
   const [selectedDate, setSelectedDate] = useState(new Date(TODAY_STR).toISOString().slice(0, 10))
-  const ym = (selectedDate || TODAY_STR).slice(0, 7)
 
   const [selectedOffice, setSelectedOffice] = useState<string>(isHQ ? '' : '')
   useEffect(() => { if (!isHQ && myOfficeName) setSelectedOffice(myOfficeName) }, [isHQ, myOfficeName])
@@ -117,6 +147,34 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
     }
   }, [mode, employees, selectedEmployee])
 
+  // ▼▼ 月次：active_range に基づく「年」「月」選択 ▼▼
+  const [availableYms, setAvailableYms] = useState<string[]>([]) // "YYYY-MM"
+  const [selectedYear, setSelectedYear] = useState<string>('')    // "2025"
+  const [selectedMonth, setSelectedMonth] = useState<string>('')  // "08"
+  const selectedYm = useMemo(() => (selectedYear && selectedMonth ? `${selectedYear}-${selectedMonth}` : ''), [selectedYear, selectedMonth])
+  const availableYears = useMemo(() => Array.from(new Set(availableYms.map(ym => ym.slice(0, 4)))), [availableYms])
+  const monthsInSelectedYear = useMemo(() => availableYms.filter(ym => ym.startsWith(`${selectedYear}-`)).map(ym => ym.slice(5, 7)), [availableYms, selectedYear])
+
+  // 従業員が選ばれたら active_range を取得 → 年月セレクトに反映
+  useEffect(() => {
+    (async () => {
+      if (mode !== 'monthly') return
+      const empId = nameToId[selectedEmployee]
+      if (!empId) { setAvailableYms([]); setSelectedYear(''); setSelectedMonth(''); return }
+      const { startYm, endYm } = await getEmployeeActiveRange(empId)
+      const yms = enumerateYm(startYm, endYm)
+      setAvailableYms(yms)
+      // 既定は最新月（APIの endYm が最新でない実装もあるため列挙結果の末尾を優先）
+      const latest = yms[yms.length - 1] || endYm
+      if (latest) {
+        const [y, m] = latest.split('-')
+        setSelectedYear(y)
+        setSelectedMonth(m)
+      }
+    })()
+  }, [mode, selectedEmployee, nameToId])
+  // ▲▲ 月次：active_range 終了 ▲▲
+
   // 検索/フィルタ
   const [q, setQ] = useState('')
   const [abnormalOnly, setAbnormalOnly] = useState(false)
@@ -137,6 +195,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
       return r
     })
 
+  // 取得
   useEffect(() => {
     (async () => {
       setLoading(true)
@@ -148,19 +207,52 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
           setBaseRows(fixNames(strict as RowWithRecordId[]))
         } else {
           const empId = nameToId[selectedEmployee]
-          if (!empId) { setBaseRows([]); return }
-          const rows = await getMonthRowsByEmployeeId(empId, ym)
-          // 月次は officeName が返らない実装があるので、選択中の営業所で補完
-          const completed = (rows as RowWithRecordId[]).map(r =>
-            r.officeName ? r : { ...r, officeName: selectedOffice }
-          )
-          setBaseRows(fixNames(completed))
+          if (!empId || !selectedYm) { setBaseRows([]); return }
+
+          // 参照する年月で読み込み
+          const [yy, mm] = selectedYm.split('-').map(Number)
+          const rows = await getMonthRowsByEmployeeId(empId, selectedYm)
+
+          // 月内の全日を生成し、当日まででクリップ
+          const allDays = eachDay(yy, mm)
+          const todayIso = new Date(TODAY_STR).toISOString().slice(0, 10)
+          const days = allDays.filter(d => d <= todayIso)
+
+          // 既存レコードを日付キーに
+          const byDate = new Map<string, RowWithRecordId>()
+          for (const r of rows as RowWithRecordId[]) {
+            byDate.set(r.date.slice(0, 10), r)
+          }
+
+          // 全日を埋める（未存在日は未入力プレースホルダ）
+          const filled: RowWithRecordId[] = days.map((d) => {
+            const hit = byDate.get(d)
+            if (hit) {
+              return {
+                ...hit,
+                officeName: hit.officeName || selectedOffice,
+              }
+            }
+            return {
+              id: `${d}-${empId}`,
+              officeName: selectedOffice,
+              employeeName: selectedEmployee,
+              date: d,
+              status: '未入力',
+              supervisorConfirmed: false,
+              abnormalItems: [],
+              hasAnyComment: false,
+              recordId: null,
+            }
+          })
+
+          setBaseRows(fixNames(filled))
         }
       } finally {
         setLoading(false)
       }
     })()
-  }, [mode, selectedOffice, selectedDate, selectedEmployee, ym, nameToId, idToName])
+  }, [mode, selectedOffice, selectedDate, selectedEmployee, selectedYm, nameToId, idToName])
 
   const rows = baseRows
 
@@ -253,11 +345,9 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                           onClick={() => {
                             const el = dateInputRef.current
                             if (!el) return
-                            // Chrome/Edge など
                             if (typeof (el as any).showPicker === 'function') {
                               ;(el as any).showPicker()
                             } else {
-                              // フォールバック
                               el.focus()
                               el.click?.()
                             }
@@ -293,8 +383,9 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
 
                 {/* 月次 */}
                 <TabsContent value="monthly" className="m-0">
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <div className="space-y-2 min-w-0">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
+                    {/* 営業所 */}
+                    <div className="space-y-2 min-w-0 md:col-span-2">
                       <span className="text-sm font-medium">営業所</span>
                       <Select
                         value={selectedOffice}
@@ -314,7 +405,8 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                       </Select>
                     </div>
 
-                    <div className="space-y-2 min-w-0">
+                    {/* 従業員 */}
+                    <div className="space-y-2 min-w-0 md:col-span-3">
                       <span className="text-sm font-medium">従業員</span>
                       <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
                         <SelectTrigger className={triggerClass}>
@@ -330,7 +422,50 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                       </Select>
                     </div>
 
+                    {/* 年 */}
                     <div className="space-y-2 min-w-0">
+                      <span className="text-sm font-medium">年</span>
+                      <Select
+                        value={selectedYear}
+                        onValueChange={(v) => { setSelectedYear(v); setSelectedMonth('') }}
+                        disabled={!availableYears.length}
+                      >
+                        <SelectTrigger className={triggerClass}>
+                          <SelectValue placeholder="年を選択" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[60] w-[140px] bg-white rounded-xl border border-gray-200 p-1 shadow-xl">
+                          {availableYears.map((y) => (
+                            <SelectItem key={y} value={y} className="rounded-md px-3 py-2 text-[14px] data-[highlighted]:bg-gray-100">
+                              {y}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* 月 */}
+                    <div className="space-y-2 min-w-0">
+                      <span className="text-sm font-medium">月</span>
+                      <Select
+                        value={selectedMonth}
+                        onValueChange={setSelectedMonth}
+                        disabled={!monthsInSelectedYear.length}
+                      >
+                        <SelectTrigger className={triggerClass}>
+                          <SelectValue placeholder="月を選択" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[60] w-[120px] bg-white rounded-xl border border-gray-200 p-1 shadow-xl">
+                          {monthsInSelectedYear.map((mm) => (
+                            <SelectItem key={mm} value={mm} className="rounded-md px-3 py-2 text-[14px] data-[highlighted]:bg-gray-100">
+                              {Number(mm)}月
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* 検索 */}
+                    <div className="space-y-2 min-w-0 md:col-span-2">
                       <span className="text-sm font-medium">検索</span>
                       <div className="relative">
                         <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -358,7 +493,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
           <span>
             {mode === 'daily'
               ? `${selectedOffice || '（未選択）'} ${new Date(selectedDate || TODAY_STR).toLocaleDateString('ja-JP')} の記録：${filtered.length}件`
-              : `${selectedEmployee || '（未選択）'} の今月の記録：${filtered.length}件`}
+              : `${selectedEmployee || '（未選択）'} の ${selectedYm || '（月未選択）'} の記録：${filtered.length}件`}
           </span>
           <span>最終更新: {new Date().toLocaleString('ja-JP')}</span>
         </div>
@@ -382,7 +517,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
               <div className="py-12 text-center text-gray-500">読み込み中…</div>
             ) : filtered.length === 0 ? (
               <div className="py-12 text-center text-gray-500">
-                {mode === 'daily' ? '営業所と日付を選択すると一覧が表示されます' : '従業員を選択すると一覧が表示されます'}
+                {mode === 'daily' ? '営業所と日付を選択すると一覧が表示されます' : '従業員と月を選択すると一覧が表示されます'}
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -396,6 +531,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                       <TableHead className="w-[10ch] text-center font-semibold">コメント</TableHead>
                       <TableHead className="w-[14ch] font-semibold">ステータス</TableHead>
                       <TableHead className="w-[14ch] text-center font-semibold">責任者確認</TableHead>
+                      <TableHead className="w-[10ch] text-center font-semibold">削除</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody className="[&_tr]:border-b [&_tr]:border-gray-100 [&_tr]:transition-colors [&_tr:hover]:!bg-gray-50">
@@ -498,60 +634,56 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                               className="mx-auto data-[state=checked]:bg-gray-900 data-[state=checked]:text-white"
                             />
                           </TableCell>
-<TableCell className="text-center">
-  <Button
-    variant="outline"
-    size="sm"
-    className="rounded-full px-3 h-8 text-red-700 border-red-200 hover:bg-red-50"
-    disabled={!r.recordId} // ★ recordId 必須に
-    title={r.recordId ? 'この記録を未入力状態に戻します' : '記録が未作成のためクリアできません'}
-    onClick={async () => {
-      if (!r.recordId) return
-      const ok = window.confirm(
-        `「${r.employeeName} / ${new Date(r.date).toLocaleDateString('ja-JP')}」の記録をクリアしますか？\n（出退勤・異常・コメント・確認状態をリセット）`
-      )
-      if (!ok) return
 
-      // 直前のスナップショットを退避（ロールバック用）
-      const prev = [...baseRows]
+                          {/* クリアボタン */}
+                          <TableCell className="text-center">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="rounded-full px-3 h-8 text-red-700 border-red-200 hover:bg-red-50"
+                              disabled={!r.recordId}
+                              title={r.recordId ? 'この記録を未入力状態に戻します' : '記録が未作成のためクリアできません'}
+                              onClick={async () => {
+                                if (!r.recordId) return
+                                const ok = window.confirm(
+                                  `「${r.employeeName} / ${new Date(r.date).toLocaleDateString('ja-JP')}」の記録をクリアしますか？\n（出退勤・異常・コメント・確認状態をリセット）`
+                                )
+                                if (!ok) return
 
-      // 楽観更新：対象行を「未入力」に寄せる
-      setBaseRows((rows) =>
-        rows.map((x) =>
-          x.id === r.id
-            ? {
-                ...x,
-                status: '未入力' as const,
-                abnormalItems: [],
-                hasAnyComment: false,
-                supervisorConfirmed: false,
-                recordId: null,
-              }
-            : x
-        )
-      )
+                                const prev = [...baseRows]
 
-      try {
-        await clearDailyRecord({
-          recordId: r.recordId,
-          // サーバは /clear/ が通るので employeeCode/date は不要だが、
-          // フォールバック経路のために残しておいてOK
-          employeeCode: (r as any)._employeeCode ?? undefined,
-          dateISO: r.date,
-        })
-        // 成功：何もしない（楽観更新確定）
-        // 必要なら再読込するならここで fetch を実行
-      } catch (e) {
-        // 失敗：ロールバック
-        setBaseRows(prev)
-        alert('クリアに失敗しました。権限やAPI実装をご確認ください。')
-      }
-    }}
-  >
-    ×
-  </Button>
-</TableCell>
+                                // 楽観更新
+                                setBaseRows((rows) =>
+                                  rows.map((x) =>
+                                    x.id === r.id
+                                      ? {
+                                          ...x,
+                                          status: '未入力' as const,
+                                          abnormalItems: [],
+                                          hasAnyComment: false,
+                                          supervisorConfirmed: false,
+                                          recordId: null,
+                                        }
+                                      : x
+                                  )
+                                )
 
+                                try {
+                                  await clearDailyRecord({
+                                    recordId: r.recordId,
+                                    employeeCode: (r as any)._employeeCode ?? undefined, // フォールバック用
+                                    dateISO: r.date,
+                                  })
+                                  // 成功：楽観更新のまま
+                                } catch (e) {
+                                  setBaseRows(prev) // ロールバック
+                                  alert('クリアに失敗しました。権限やAPI実装をご確認ください。')
+                                }
+                              }}
+                            >
+                              ×
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       )
                     })}

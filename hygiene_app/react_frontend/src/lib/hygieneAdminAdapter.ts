@@ -1019,3 +1019,45 @@ export async function clearDailyRecord(params: {
 
   throw new Error("レコードのクリアに失敗しました")
 }
+
+
+// 追加: 従業員の活動範囲（最初の記録〜今日）を取得
+export type ActiveRange = { startYm: string; endYm: string }
+
+// src/lib/hygieneAdminAdapter.ts
+
+export async function getEmployeeActiveRange(
+  employeeId: string | number
+): Promise<{ startYm: string; endYm: string }> {
+  const id = encodeURIComponent(String(employeeId))
+
+  // ✅ 正しいエンドポイント（推奨：パスパラメータ／末尾スラッシュあり）
+  try {
+    const res = await apiGet<any>(`/employees/${id}/active_range/`)
+    const startYm = String(res?.startYm || '').slice(0, 7)
+    const endYm   = String(res?.endYm   || '').slice(0, 7)
+    return { startYm, endYm }
+  } catch {
+    // フォールバック：クエリ版
+    const res = await apiGet<any>(`/employees/active_range/?employee_id=${id}`)
+    const startYm = String(res?.startYm || '').slice(0, 7)
+    const endYm   = String(res?.endYm   || '').slice(0, 7)
+    return { startYm, endYm }
+  }
+}
+
+// 追加: YYYY-MM を start〜end（両端含む）で列挙
+export function enumerateYm(startYm: string, endYm: string): string[] {
+  const ok = (s: string) => /^\d{4}-\d{2}$/.test(s)
+  if (!ok(startYm) || !ok(endYm)) return []
+  const [sy, sm] = startYm.split("-").map(Number)
+  const [ey, em] = endYm.split("-").map(Number)
+  const out: string[] = []
+  let y = sy, m = sm
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(`${y}-${String(m).padStart(2, "0")}`)
+    m++
+    if (m > 12) { m = 1; y++ }
+  }
+  return out
+}
