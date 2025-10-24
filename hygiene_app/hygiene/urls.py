@@ -11,6 +11,7 @@ from .views import (
     SubmitRecordView,
     CalendarStatusView,
     RecordSupervisorConfirmView,
+    RecordClearView,
 )
 
 router = DefaultRouter()
@@ -39,4 +40,7 @@ urlpatterns = [
 
     # router 配下（/offices/, /employees/, /records/, /confirmations/）
     path("", include(router.urls)),
+    
+    #記録のクリア
+    path("records/<int:pk>/clear/", RecordClearView.as_view(), name="record-clear"),
 ]

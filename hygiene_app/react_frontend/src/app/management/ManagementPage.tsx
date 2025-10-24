@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useRef, useMemo, useState } from 'react'
 import { UsersRound, Home, Calendar as CalendarIcon, Search, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,6 +19,7 @@ import { loadSession } from '@/lib/session'
 
 import {
   getDailyRows,
+  getDailyRowsAllEmployees,
   getOfficeNames,
   getEmployeesForOffice,
   getBranchNameByCode,
@@ -29,6 +30,7 @@ import {
   getMonthRowsByEmployeeId,
   type HygieneRecordRow,
   type EmployeeLite,
+  clearDailyRecord,
 } from '@/lib/hygieneAdminAdapter'
 
 type DetailItem = { category: string; label: string; section: string; is_normal: boolean; value: string | null }
@@ -141,7 +143,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
       try {
         if (mode === 'daily') {
           if (!selectedOffice || !selectedDate) { setBaseRows([]); return }
-          const raw = await getDailyRows(selectedOffice, selectedDate)
+          const raw = await getDailyRowsAllEmployees(selectedOffice, selectedDate)
           const strict = await filterRowsByOffice(raw, selectedOffice)
           setBaseRows(fixNames(strict as RowWithRecordId[]))
         } else {
@@ -182,6 +184,8 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
   // 詳細
   const [detailOpen, setDetailOpen] = useState(false)
   const [detail, setDetail] = useState<DetailState>(null)
+
+  const dateInputRef = useRef<HTMLInputElement>(null)
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -239,11 +243,41 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                       </Select>
                     </div>
 
-                    <div className="space-y-2 min-w-0">
+                    <div className="space-y-2 min-w-0 ">
                       <span className="text-sm font-medium">表示日</span>
                       <div className="relative">
-                        <CalendarIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                        <Input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className={inputWithIcon} />
+                        {/* 左アイコン（クリックでピッカーを開く） */}
+                        <button
+                          type="button"
+                          aria-label="日付を選択"
+                          onClick={() => {
+                            const el = dateInputRef.current
+                            if (!el) return
+                            // Chrome/Edge など
+                            if (typeof (el as any).showPicker === 'function') {
+                              ;(el as any).showPicker()
+                            } else {
+                              // フォールバック
+                              el.focus()
+                              el.click?.()
+                            }
+                          }}
+                          className="absolute left-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-gray-100"
+                        >
+                          <CalendarIcon className="h-4 w-4 text-gray-500" />
+                        </button>
+
+                        {/* ネイティブ input[type=date] */}
+                        <Input
+                          ref={dateInputRef}
+                          type="date"
+                          value={selectedDate}
+                          onChange={(e) => setSelectedDate(e.target.value)}
+                          className={`${inputWithIcon} pl-10 pr-3 appearance-auto
+                            [&::-webkit-calendar-picker-indicator]:opacity-0
+                            [&::-webkit-calendar-picker-indicator]:pointer-events-none
+                          `}
+                        />
                       </div>
                     </div>
 
@@ -464,6 +498,60 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                               className="mx-auto data-[state=checked]:bg-gray-900 data-[state=checked]:text-white"
                             />
                           </TableCell>
+<TableCell className="text-center">
+  <Button
+    variant="outline"
+    size="sm"
+    className="rounded-full px-3 h-8 text-red-700 border-red-200 hover:bg-red-50"
+    disabled={!r.recordId} // ★ recordId 必須に
+    title={r.recordId ? 'この記録を未入力状態に戻します' : '記録が未作成のためクリアできません'}
+    onClick={async () => {
+      if (!r.recordId) return
+      const ok = window.confirm(
+        `「${r.employeeName} / ${new Date(r.date).toLocaleDateString('ja-JP')}」の記録をクリアしますか？\n（出退勤・異常・コメント・確認状態をリセット）`
+      )
+      if (!ok) return
+
+      // 直前のスナップショットを退避（ロールバック用）
+      const prev = [...baseRows]
+
+      // 楽観更新：対象行を「未入力」に寄せる
+      setBaseRows((rows) =>
+        rows.map((x) =>
+          x.id === r.id
+            ? {
+                ...x,
+                status: '未入力' as const,
+                abnormalItems: [],
+                hasAnyComment: false,
+                supervisorConfirmed: false,
+                recordId: null,
+              }
+            : x
+        )
+      )
+
+      try {
+        await clearDailyRecord({
+          recordId: r.recordId,
+          // サーバは /clear/ が通るので employeeCode/date は不要だが、
+          // フォールバック経路のために残しておいてOK
+          employeeCode: (r as any)._employeeCode ?? undefined,
+          dateISO: r.date,
+        })
+        // 成功：何もしない（楽観更新確定）
+        // 必要なら再読込するならここで fetch を実行
+      } catch (e) {
+        // 失敗：ロールバック
+        setBaseRows(prev)
+        alert('クリアに失敗しました。権限やAPI実装をご確認ください。')
+      }
+    }}
+  >
+    ×
+  </Button>
+</TableCell>
+
                         </TableRow>
                       )
                     })}
@@ -474,14 +562,14 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
           </CardContent>
         </Card>
 
-        <div className="text-center text-xs text-gray-500">ログイン中: {isHQ ? '本社管理者' : '支店管理者'}</div>
+        <div className="text-center text-xs text-gray-500">ログイン中: {isHQ ? '本社管理者' : '営業所管理者'}</div>
 
         {/* 詳細ダイアログ */}
         <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
           <DialogContent className="sm:max-w-[760px] rounded-2xl bg-white">
             <DialogHeader>
               <DialogTitle>詳細</DialogTitle>
-              <DialogDescription>従業員が入力した「異常項目ごとのコメント」をカテゴリ辞書に従って表示します。</DialogDescription>
+              <DialogDescription></DialogDescription>
             </DialogHeader>
 
             {!detail ? (

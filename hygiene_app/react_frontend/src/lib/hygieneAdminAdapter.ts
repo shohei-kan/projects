@@ -470,6 +470,8 @@ export async function getMonthRows(employeeKey: string, ym: string): Promise<Hyg
   }
 }
 
+
+
 /** ------------- 詳細API 正規化＆キャッシュ（堅牢版） ------------- **/
 const CATEGORY_DICT: Record<string, { label: string; section: string }> = {
   temperature: { label: "体温", section: "体温・体調" },
@@ -665,28 +667,27 @@ async function fetchRecordDetailFlexible(id: string): Promise<any | null> {
   const key = String(id)
   if (DETAIL_CACHE.has(key)) return DETAIL_CACHE.get(key)
 
-  // まず /records/:id/ を試す
-  for (const path of [`/records/${key}/`, `/records/${key}`]) {
-    try {
-      const d = await apiGet<any>(path)
-      DETAIL_CACHE.set(key, d)
-      return d
-    } catch {}
+  // 合成キー（date-emp or emp-date）を検知
+  const mDateEmp = key.match(/^(\d{4}-\d{2}-\d{2})-(\d+)$/)
+  const mEmpDate = key.match(/^(\d+)-(\d{4}-\d{2}-\d{2})$/)
+  const isComposite = Boolean(mDateEmp || mEmpDate)
+
+  // 1) 純粋な数値IDに限り /records/:id/ を試す（404ノイズ防止）
+  if (!isComposite && /^\d+$/.test(key)) {
+    for (const path of [`/records/${key}/`, `/records/${key}`]) {
+      try {
+        const d = await apiGet<any>(path)
+        DETAIL_CACHE.set(key, d)
+        return d
+      } catch {}
+    }
   }
 
-  // 合成キー探索
+  // 2) 合成キー or 数値ID不成功 → パラメータ検索
   let datePart: string | null = null,
     empPart: string | null = null
-  const m1 = key.match(/^(\d{4}-\d{2}-\d{2})-(\d+)$/)
-  const m2 = key.match(/^(\d+)-(\d{4}-\d{2}-\d{2})$/)
-  if (m1) {
-    datePart = m1[1]
-    empPart = m1[2]
-  }
-  if (m2) {
-    datePart = m2[2]
-    empPart = m2[1]
-  }
+  if (mDateEmp) { datePart = mDateEmp[1]; empPart = mDateEmp[2] }
+  if (mEmpDate) { datePart = mEmpDate[2]; empPart = mEmpDate[1] }
 
   if (datePart && empPart) {
     const qsDate = encodeURIComponent(datePart)
@@ -721,7 +722,9 @@ async function hydrateFromDetails(list: NormalizedRow[]): Promise<NormalizedRow[
   const targets = list.filter((r) => (r.abnormalItems?.length ?? 0) === 0 || !r.hasAnyComment)
   if (!targets.length) return list
 
-  const results = await Promise.allSettled(targets.map((r) => fetchRecordDetailFlexible(r.id)))
+  // ★ recordId があればそれを優先キーに、なければ id（合成キー）
+  const keys = targets.map((r) => (r.recordId != null ? String(r.recordId) : String(r.id)))
+  const results = await Promise.allSettled(keys.map((k) => fetchRecordDetailFlexible(k)))
 
   results.forEach((res, i) => {
     if (res.status !== "fulfilled" || !res.value) return
@@ -843,4 +846,176 @@ export async function filterRowsByOffice(
     if (byId.length) return byId as HygieneRecordRow[]
   }
   return src.filter((r) => officeEqByName(r.officeName, officeName)) as HygieneRecordRow[]
+}
+// =============================
+// A) アダプタに集約（推奨）
+// ファイル: src/lib/hygieneAdminAdapter.ts
+// 末尾のエクスポート群の近くに追記
+// =============================
+
+export async function getDailyRowsAllEmployees(
+  officeName: string,
+  ymd: string,
+): Promise<HygieneRecordRow[]> {
+  // 既存の堅牢ロジックを最大限再利用
+  const [rows, employees] = await Promise.all([
+    getDailyRows(officeName, ymd),            // 一旦 API からある分だけ取得
+    getEmployeesForOffice(officeName),        // 営業所の従業員一覧
+  ])
+
+  // 既存行を正規化して、社員コード/IDを拾えるようにする
+  const normed = (rows as any[]).map((x) => normalizeRow(x)) as NormalizedRow[]
+
+  // 既存行を employeeCode / employeeName で引けるように準備
+  const byEmpCode = new Map<string, NormalizedRow>()
+  const byEmpName = new Map<string, NormalizedRow>()
+  for (const r of normed) {
+    if (r._employeeCode) byEmpCode.set(String(r._employeeCode), r)
+    if (r.employeeName) byEmpName.set(String(r.employeeName), r)
+  }
+
+  // 従業員一覧をベースに、既存行が無い人は「未入力」で生成
+  const synth: HygieneRecordRow[] = employees.map((e) => {
+    const code = (e.code || '').trim()
+    const name = (e.name || '').trim()
+
+    const hit = (code && byEmpCode.get(code)) || (name && byEmpName.get(name))
+    if (hit) {
+return {
+  id: String(hit.id),
+  officeName: String(hit.officeName || officeName),
+  employeeName: String(hit.employeeName || name),
+  date: String(hit.date || ymd).slice(0, 10),
+  status: hit.status,
+  supervisorConfirmed: !!hit.supervisorConfirmed,
+  abnormalItems: Array.isArray(hit.abnormalItems) ? hit.abnormalItems : [],
+  hasAnyComment: !!hit.hasAnyComment,
+  recordId: hit.recordId ?? (Number.isFinite(Number(hit.id)) ? Number(hit.id) : null), // ★追加
+}
+}
+
+    // ★未入力の合成行
+return {
+  id: `${ymd}-${code || name}`,
+  officeName,
+  employeeName: name,
+  date: ymd,
+  status: '未入力',
+  supervisorConfirmed: false,
+  abnormalItems: [],
+  hasAnyComment: false,
+  // ▼追加：未作成なので null
+  recordId: null,
+}  })
+
+  // 既存行にいて、従業員マスタにいない（例: 退職/異動の残骸、ゲスト等）も表示に落とさないために追加
+  const extra = normed.filter((r) => {
+    const key = String(r._employeeCode || r.employeeName || '')
+    if (!key) return false
+    return !employees.some((e) => e.code === r._employeeCode || e.name === r.employeeName)
+}).map((hit) => ({
+  id: String(hit.id),
+  officeName: String(hit.officeName || officeName),
+  employeeName: String(hit.employeeName || ''),
+  date: String(hit.date || ymd).slice(0, 10),
+  status: hit.status,
+  supervisorConfirmed: !!hit.supervisorConfirmed,
+  abnormalItems: Array.isArray(hit.abnormalItems) ? hit.abnormalItems : [],
+  hasAnyComment: !!hit.hasAnyComment,
+  // ▼追加
+  recordId:
+    hit.recordId ?? (Number.isFinite(Number(hit.id)) ? Number(hit.id) : null),
+}))
+  const merged = [...synth, ...extra]
+
+  // 異常/コメントの注入（不足分のみ）
+  const enriched = await hydrateFromDetails(merged as any)
+
+  // 数字の employeeName を従業員キャッシュで補完
+  enriched.forEach((r: any) => patchEmployeeName(r))
+
+  // 表示安定のため氏名ソート
+  return enriched.sort((a: HygieneRecordRow, b: HygieneRecordRow) =>
+    a.employeeName.localeCompare(b.employeeName, 'ja'),
+  )
+}
+
+/** ================= レコードクリア（安全版） ================= */
+export async function clearDailyRecord(params: {
+  recordId?: number | string | null
+  employeeCode?: string | null
+  dateISO?: string | null
+}): Promise<void> {
+  const id = params.recordId != null ? String(params.recordId) : null
+
+  // 1) /records/:id/clear/ （推奨エンドポイント想定）
+  const tryIdClear = async () => {
+    if (!id) return false
+    const paths = [
+      `/records/${encodeURIComponent(id)}/clear/`,
+      `/records/${encodeURIComponent(id)}/clear`,
+    ]
+    for (const p of paths) {
+      try {
+        const r = await fetch(join(p), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          credentials: CREDENTIALS,
+        })
+        if (r.ok) return true
+      } catch {}
+    }
+    return false
+  }
+
+  // 2) DELETE /records/:id/（削除が許可されている場合）
+  const tryIdDelete = async () => {
+    if (!id) return false
+    try {
+      const r = await fetch(join(`/records/${encodeURIComponent(id)}/`), {
+        method: "DELETE",
+        credentials: CREDENTIALS,
+      })
+      if (r.ok || r.status === 204) return true
+    } catch {}
+    try {
+      const r2 = await fetch(join(`/records/${encodeURIComponent(id)}`), {
+        method: "DELETE",
+        credentials: CREDENTIALS,
+      })
+      if (r2.ok || r2.status === 204) return true
+    } catch {}
+    return false
+  }
+
+  // 3) 代替：submit で空の値を上書き（items空・打刻null）
+  const trySubmitEmpty = async () => {
+    if (!params.employeeCode || !params.dateISO) return false
+    try {
+      const payload = {
+        employee_code: params.employeeCode,
+        date: params.dateISO,
+        work_start_time: null,
+        work_end_time: null,
+        supervisor_code: null,
+        items: [] as any[],
+      }
+      const r = await fetch(join("/records/submit"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: CREDENTIALS,
+      })
+      return r.ok
+    } catch {
+      return false
+    }
+  }
+
+  // 順に試す
+  if (await tryIdClear()) return
+  if (await tryIdDelete()) return
+  if (await trySubmitEmpty()) return
+
+  throw new Error("レコードのクリアに失敗しました")
 }

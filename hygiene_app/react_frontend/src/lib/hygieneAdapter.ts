@@ -303,6 +303,16 @@ export function canConfirmRow(opts: {
   return row.officeName === userOffice;           // 同一営業所のみOK
 }
 
+// === 当日のフォーム状態を「当日レコードのみ」で判定（カレンダー等は使わない） ===
+export function statusFromTodayRecord(
+  rec: { work_start_time?: string | null; work_end_time?: string | null } | null | undefined
+): StatusJP {
+  if (!rec) return "未入力";
+  if (rec.work_end_time) return "退勤入力済";
+  if (rec.work_start_time) return "出勤入力済";
+  return "未入力";
+}
+
 /* --------------------------------
  * フォーム画面向け（読取）
  * -------------------------------- */
@@ -438,16 +448,21 @@ export async function getTodayRecordWithItems(
   );
   const rec = list[0] ?? null;
 
-  const record = rec
-    ? ({
-        id: rec.id,
-        employeeCode,
-        date: rec.date,
-        work_start_time: rec.work_start_time,
-        work_end_time: rec.work_end_time,
-      } as unknown as RecordRow)
-    : null;
-
+const record = rec
+  ? ({
+      id: rec.id,
+      employeeCode,
+      date: rec.date,
+      work_start_time: rec.work_start_time,
+      work_end_time: rec.work_end_time,
+      // ★ 休み系も載せる（あれば）
+      is_off: (rec as any).is_off ?? null,
+      day_off: (rec as any).day_off ?? null,
+      work_type: (rec as any).work_type ?? null,
+      status_jp: (rec as any).status_jp ?? (rec as any).status ?? null,
+    } as unknown as RecordRow)
+  : null;
+  
   const items = rec
     ? (rec.items.map(
         (it) =>
@@ -571,47 +586,71 @@ export async function getDashboardStaffRows(
 
 // --- 4) 行生成 ---
 return rows.map((r: any): DashboardStaffRow => {
-  // 文字/数値も受けるブール正規化
-  const toBool = (v: any) =>
-    v === true || v === 1 || v === "1" || v === "true" || v === "True";
+  const toBoolLoose = (v: any) =>
+    v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
+  const nonEmpty = (v: any) => v != null && String(v).trim() !== "";
+  const looksEmpCode = (s: any) => typeof s === "string" && /^\d{6}$/.test(s);
 
+  // ★ 従業員コードを最優先で抽出
+  const rawCode =
+    r.employee_code ?? r.employeeCode ?? r.code ?? r.emp_code ?? r.empCode ?? null;
+  const rawEmpId = r.employee ?? r.employee_id ?? null; // 数値IDのことがある
+  const fallbackId = r.id ?? null;                       // 行IDやレコードIDのことがある
+
+  const employeeCode =
+    (looksEmpCode(rawCode) && String(rawCode)) ||
+    (looksEmpCode(fallbackId) && String(fallbackId)) ||
+    (looksEmpCode(rawEmpId) && String(rawEmpId)) ||
+    String(rawCode ?? rawEmpId ?? fallbackId ?? "");  // 最後の保険
+
+  const statusFromApi = String(r.statusJp ?? r.status_jp ?? r.status ?? "").trim();
   const workType = String(r.work_type ?? r.workType ?? "").trim().toLowerCase();
-  const statusFromApi = String(r.statusJp ?? r.status_jp ?? "").trim();
 
-  // ★ 休み判定を強化：数値/文字の真偽も含めて吸収
   const isOff =
-    toBool(r.isOff) ||
-    toBool(r.is_off) ||
-    toBool(r.day_off) ||
+    toBoolLoose(r.isOff) ||
+    toBoolLoose(r.is_off) ||
+    toBoolLoose(r.day_off) ||
     workType === "off" ||
-    /休/.test(statusFromApi) ||   // APIが日本語ステータスだけ返す場合
-    /off/i.test(statusFromApi);   // 英語ステータスでも拾う
+    /休/.test(statusFromApi) ||
+    /off/i.test(statusFromApi);
 
-  // 休みが true なら無条件で "休み"
-  const status_jp = isOff
-    ? "休み"
-    : (statusFromApi && statusFromApi !== "-" ? statusFromApi : "-");
+  const arrived =
+    toBoolLoose(r.arrivalRegistered) ||
+    toBoolLoose(r.arrival_registered) ||
+    toBoolLoose(r.checked_in) ||
+    toBoolLoose(r.clock_in) ||
+    nonEmpty(r.work_start_time) ||
+    /出勤/.test(statusFromApi);
+
+  const departed =
+    toBoolLoose(r.departureRegistered) ||
+    toBoolLoose(r.departure_registered) ||
+    toBoolLoose(r.checked_out) ||
+    toBoolLoose(r.clock_out) ||
+    nonEmpty(r.work_end_time) ||
+    /退勤/.test(statusFromApi);
+
+  const arrivalRegistered = !isOff && arrived;
+  const departureRegistered = !isOff && departed;
+
+  const status_jp =
+    isOff ? "休み" : departed ? "退勤入力済" : arrived ? "出勤入力済" : (statusFromApi && statusFromApi !== "-" ? statusFromApi : "-");
 
   return {
-    id: String(r.employee_code ?? r.employee ?? r.id ?? ""),
+    id: employeeCode, // ★ ここを“従業員コード”に統一
     name: String(r.employee_name ?? r.name ?? ""),
-    arrivalRegistered: Boolean(
-      r.arrivalRegistered ?? r.checked_in ?? r.work_start_time
-    ),
-    departureRegistered: Boolean(
-      r.departureRegistered ?? r.checked_out ?? r.work_end_time
-    ),
+    arrivalRegistered,
+    departureRegistered,
     temperature:
-      r.temperature != null && String(r.temperature) !== ""
-        ? Number(r.temperature)
-        : null,
+      r.temperature != null && String(r.temperature) !== "" ? Number(r.temperature) : null,
     symptoms: Boolean(r.symptoms ?? r.has_symptoms ?? false),
     comment: String(r.comment ?? ""),
-    is_off: isOff,
-    status_jp,
-    work_type: (r.work_type ?? (isOff ? "off" : "work")) as "off" | "work",
+    is_off: isOff as any,
+    status_jp: status_jp as any,
+    work_type: (isOff ? "off" : "work") as any,
   };
 });
+
 }
 /* --------------------------------
  * 管理画面：詳細取得（ラベル付き）
@@ -755,39 +794,157 @@ export async function submitDailyForm(params: {
   workStartTime?: string | null;
   workEndTime?: string | null;
   items: { category: string; is_normal: boolean; value?: string | number | null; comment?: string | null }[];
-  supervisorCode?: string | null; // ★追加
+  supervisorCode?: string | null;
 }): Promise<void> {
-  if (USE_API) {
-    const payload = {
-      employee_code: params.employeeCode,
-      date: params.dateISO,
-      work_start_time: params.workStartTime ?? null,
-      work_end_time: params.workEndTime ?? null,
-      supervisor_code: params.supervisorCode ?? null,
-      items: params.items.map((it) => ({
-        category: it.category,
-        is_normal: !!it.is_normal,
-        value: it.value == null ? null : String(it.value),
-        comment: it.comment ?? null,
-      })),
-    };
-    const r = await fetch(join("/records/submit"), {
+  if (!USE_API) {
+    console.warn("USE_API=0 のため、submitDailyForm は無効（saveDailyCheck を利用してください）");
+    return;
+  }
+
+  const payload = {
+    employee_code: params.employeeCode,
+    date: params.dateISO,
+    work_start_time: params.workStartTime ?? null,
+    work_end_time: params.workEndTime ?? null,
+    supervisor_code: params.supervisorCode ?? null,
+    items: params.items.map((it) => ({
+      category: it.category,
+      is_normal: !!it.is_normal,
+      value: it.value == null ? null : String(it.value),
+      comment: it.comment ?? null,
+    })),
+  };
+
+  const postJson = async (path: string) => {
+    const r = await fetch(join(path), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(payload),
+      credentials: CREDENTIALS,
+    });
+    return r;
+  };
+
+  // 0) まず consolidated な submit があればそれを使う
+  {
+    const r = await postJson("/records/submit").catch(() => undefined);
+    if (r && r.ok) return;
+    // 404/405/501 などはフォールバックへ
+  }
+
+  // 1) 既存レコードの有無を確認
+  type RecLite = { id: number };
+  const existing: RecLite[] = await apiGet<RecLite[]>(
+    `/records/?employee_code=${encodeURIComponent(params.employeeCode)}&date=${encodeURIComponent(params.dateISO)}`,
+    { quiet: true },
+  ).catch(() => []);
+
+  const upsertItems = async (recordId: number) => {
+    // a) bulk系があれば優先
+    const bulkPayload = {
+      record: recordId,
+      items: payload.items,
+    };
+    const tryBulk = async (p: string) => {
+      const r = await fetch(join(p), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(bulkPayload),
+        credentials: CREDENTIALS,
+      });
+      return r.ok;
+    };
+    if (await tryBulk("/record_items/bulk_upsert")) return;
+    if (await tryBulk("/record_items/bulk_create")) return;
+
+    // b) 明細エンドポイントが /records/:id/items 形式ならそれも試す
+    const rItems = await fetch(join(`/records/${recordId}/items/`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload.items),
+      credentials: CREDENTIALS,
+    }).catch(() => undefined);
+    if (rItems && rItems.ok) return;
+
+    // c) 最後の保険：1件ずつ POST
+    for (const it of payload.items) {
+      await fetch(join("/record_items/"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ record: recordId, ...it }),
+        credentials: CREDENTIALS,
+      }).catch(() => {});
+    }
+  };
+
+  if (existing.length > 0) {
+    // 2) 既存がある → PATCH で更新 + items upsert
+    const id = existing[0].id;
+    const patchBody = {
+      work_start_time: payload.work_start_time,
+      work_end_time: payload.work_end_time,
+      supervisor_code: payload.supervisor_code,
+      date: payload.date, // 念のため
+    };
+    const r = await fetch(join(`/records/${id}/`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(patchBody),
       credentials: CREDENTIALS,
     });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
-      console.warn("[/api error]", join("/records/submit"), r.status, t);
-      throw new Error(`submit failed: ${r.status} ${t}`);
+      throw new Error(`PATCH /records/${id}/ failed ${r.status} ${t}`);
     }
+    await upsertItems(id);
     return;
   }
 
-  console.warn("USE_API=0 のため、submitDailyForm は無効（saveDailyCheck を利用してください）");
-}
+  // 3) 新規作成 → POST /records/ → items upsert
+  {
+    // a) /records/ に統一POST（items を一緒に送って受け付ける実装にも対応）
+    const r = await fetch(join("/records/"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+      credentials: CREDENTIALS,
+    });
+    if (r.ok) {
+      let id: number | null = null;
+      try {
+        const j = await r.json();
+        id = Number(j?.id);
+      } catch {}
+      if (!Number.isFinite(id)) {
+        // 返ってこない実装もある→検索で回収
+        const made = await apiGet<RecLite[]>(
+          `/records/?employee_code=${encodeURIComponent(params.employeeCode)}&date=${encodeURIComponent(params.dateISO)}`,
+          { quiet: true },
+        ).catch(() => []);
+        id = Number(made?.[0]?.id);
+      }
+      if (Number.isFinite(id)) {
+        await upsertItems(id!);
+        return;
+      }
+    } else if (r.status === 404 || r.status === 405) {
+      // b) 別名 create を試す
+      const r2 = await postJson("/records/create").catch(() => undefined);
+      if (r2 && r2.ok) return;
+    } else {
+      const t = await r.text().catch(() => "");
+      throw new Error(`POST /records/ failed ${r.status} ${t}`);
+    }
+  }
 
+  // 4) ここまで来たら最後に consolidated submit をもう一度だけ試す（バックエンド差異の保険）
+  {
+    const r = await postJson("/records/submit").catch(() => undefined);
+    if (r && r.ok) return;
+  }
+
+  throw new Error("submit failed: no compatible endpoint");
+}
 /* --------------------------------
  * 営業所PIN：ダッシュボードの管理者認証で使用
  * -------------------------------- */

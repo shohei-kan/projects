@@ -231,6 +231,17 @@ export default function HygieneDashboard() {
     navigate("/login");
   };
 
+  // 退勤ボタンの表示条件
+const shouldShowCheckout = (r: DashboardStaffRow) => {
+  if (isDayOff(r)) return false;
+  // アダプタで正規化済みだが、status_jpの保険も見る
+  const txt = getStatusText(r);
+  const arrived = r.arrivalRegistered || /出勤/.test(txt) || /arrived|checked[_-]?in/i.test(txt);
+  const departed = r.departureRegistered || /退勤/.test(txt) || /departed|checked[_-]?out/i.test(txt);
+  return arrived && !departed;
+};
+
+
   return (
     <div className="h-screen bg-gray-50 flex">
       {/* サイドバー */}
@@ -329,7 +340,7 @@ export default function HygieneDashboard() {
                           >
                             {getStatusText(r)}
                           </span>
-                          {r.arrivalRegistered && !r.departureRegistered && (
+                          {shouldShowCheckout(r) && (
                             <button
                               onClick={() => navigate(`/form?employeeCode=${r.id}&step=2`)}
                               className="inline-flex items-center rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-300 hover:bg-blue-200 hover:ring-blue-400 transition"

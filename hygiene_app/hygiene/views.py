@@ -376,3 +376,31 @@ class RecordSupervisorConfirmView(APIView):
         rec = get_object_or_404(Record, pk=pk)
         SupervisorConfirmation.objects.filter(record=rec).delete()
         return Response({"status": "ok", "supervisor_confirmed": False}, status=status.HTTP_200_OK)
+# =========================
+# 記録のクリア
+# =========================
+
+class RecordClearView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    @transaction.atomic  # ★ これが重要
+    def post(self, request, pk: int):
+        # トランザクション内なら select_for_update を安全に使える
+        rec = get_object_or_404(Record.objects.select_for_update(), pk=pk)
+
+        # 関連レコードの削除
+        RecordItem.objects.filter(record=rec).delete()
+        SupervisorConfirmation.objects.filter(record=rec).delete()
+
+        # 本体を初期化（勤務区分/休みフラグもリセット）
+        rec.work_start_time = None
+        rec.work_end_time = None
+        rec.work_type = None
+        rec.is_off = None
+        rec.supervisor_selected = None
+        rec.save(update_fields=[
+            "work_start_time", "work_end_time",
+            "work_type", "is_off", "supervisor_selected"
+        ])
+
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
