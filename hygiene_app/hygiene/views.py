@@ -203,7 +203,7 @@ class DashboardView(APIView):
         return Response({"rows": rows}, status=status.HTTP_200_OK)
 
 # =========================
-# Write API (フォーム保存)
+# Write API (フォーム保存) 置き換え
 # =========================
 class SubmitRecordView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -215,25 +215,27 @@ class SubmitRecordView(APIView):
         s = str(s).strip().lower()
         return s if s in ("off", "work") else None
 
+    @transaction.atomic
     def post(self, request):
         data = request.data or {}
         employee_code = data.get("employee_code")
         date_str = data.get("date")
         if not employee_code or not date_str:
             return Response({"detail": "employee_code と date は必須です。"}, status=status.HTTP_400_BAD_REQUEST)
+
         d = parse_date(date_str)
         if not d:
             return Response({"detail": "date は YYYY-MM-DD 形式で指定してください。"}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            emp = Employee.objects.get(code=employee_code)
-        except Employee.DoesNotExist:
+        emp = Employee.objects.filter(code=employee_code).first()
+        if not emp:
             return Response({"detail": "employee not found"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # 受信値
         has_start_key = "work_start_time" in data
-        has_end_key = "work_end_time" in data
-        work_start_time = data.get("work_start_time", None)
-        work_end_time = data.get("work_end_time", None)
+        has_end_key   = "work_end_time" in data
+        req_start     = data.get("work_start_time", None)
+        req_end       = data.get("work_end_time", None)
 
         supervisor_code = data.get("supervisor_code")
         supervisor = Employee.objects.filter(code=supervisor_code).first() if supervisor_code else None
@@ -241,84 +243,147 @@ class SubmitRecordView(APIView):
         top_level_work_type = self._normalize_work_type(data.get("work_type"))
         items = data.get("items") or []
 
-        with transaction.atomic():
-            rec, _ = Record.objects.get_or_create(date=d, employee=emp)
+        # items 内の work_type を最優先で解釈
+        item_work_type = None
+        for it in items:
+            if (it.get("category") or "").strip().lower() == "work_type":
+                vtxt = it.get("value_text") or it.get("value")
+                item_work_type = self._normalize_work_type(vtxt)
+                break
+        decided_work_type = item_work_type or top_level_work_type
 
-            # items の work_type を最優先
-            item_work_type = None
-            for it in items:
-                if (it.get("category") or "").strip().lower() == "work_type":
-                    vtxt = it.get("value_text") or it.get("value")
-                    item_work_type = self._normalize_work_type(vtxt)
-                    break
+        # --- レコードをロックして取得 or 新規作成 ---
+        rec = (
+            Record.objects.select_for_update()
+            .filter(date=d, employee=emp)
+            .first()
+        )
+        created = False
+        if rec is None:
+            rec = Record.objects.create(date=d, employee=emp)
+            created = True
 
-            decided_work_type = item_work_type or top_level_work_type or rec.work_type
+        ignored, applied = [], []
 
-            # 退勤のみは不可
-            if has_end_key and not has_start_key and not rec.work_start_time:
-                return Response({"detail": "出勤が未登録のため、退勤は登録できません。"}, status=status.HTTP_400_BAD_REQUEST)
+        # --- 退勤済みなら以降の時刻変更は全て無視（items は許可） ---
+        if rec.work_end_time:
+            if has_start_key: ignored.append("work_start_time: already left")
+            if has_end_key:   ignored.append("work_end_time: already left")
+            # work_type の変更も無視（確定後の取り違え防止）
+            if decided_work_type:
+                ignored.append("work_type: already left")
 
-            # work_type 反映
+        else:
+            # --- work_type の適用（休日設定/解除） ---
             if decided_work_type in ("off", "work"):
-                rec.work_type = decided_work_type
-                rec.is_off = decided_work_type == "off"
-                if rec.is_off:
-                    rec.work_start_time = None
-                    rec.work_end_time = None
+                # 出勤/退勤済みがあれば 'off' への切替は無視（取り違え防止）
+                if decided_work_type == "off" and (rec.work_start_time or rec.work_end_time):
+                    ignored.append("work_type: cannot change to off after check-in/out")
+                else:
+                    # 設定を反映
+                    rec.work_type = decided_work_type
+                    rec.is_off = decided_work_type == "off"
+                    applied.append(f"work_type={decided_work_type}")
+                    # 休日は時刻クリア
+                    if rec.is_off:
+                        if rec.work_start_time: applied.append("clear work_start_time (off)")
+                        if rec.work_end_time:   applied.append("clear work_end_time (off)")
+                        rec.work_start_time = None
+                        rec.work_end_time = None
 
-            # 勤務日のみ時刻上書き
+            # --- 勤務日のみ時刻を受け付ける ---
             if not rec.is_off:
+                # 出勤
                 if has_start_key:
-                    rec.work_start_time = work_start_time
+                    if rec.work_start_time:
+                        ignored.append("work_start_time: already set")
+                    elif req_start in (None, ""):
+                        ignored.append("work_start_time: empty")
+                    else:
+                        rec.work_start_time = req_start
+                        applied.append(f"work_start_time={req_start}")
+
+                # 退勤
                 if has_end_key:
-                    rec.work_end_time = work_end_time
+                    if not rec.work_start_time:
+                        # サーバ側ガード（出勤前に退勤は不可）
+                        return Response({"detail": "出勤が未登録のため、退勤は登録できません。"}, status=status.HTTP_400_BAD_REQUEST)
+                    if rec.work_end_time:
+                        ignored.append("work_end_time: already set")
+                    elif req_end in (None, ""):
+                        ignored.append("work_end_time: empty")
+                    else:
+                        rec.work_end_time = req_end
+                        applied.append(f"work_end_time={req_end}")
+            else:
+                # 休日中は時刻系を無視
+                if has_start_key: ignored.append("work_start_time: ignored on off day")
+                if has_end_key:   ignored.append("work_end_time: ignored on off day")
 
-            if supervisor is not None:
-                rec.supervisor_selected = supervisor
+        # 確認者（任意で保持）
+        if supervisor is not None:
+            rec.supervisor_selected = supervisor
+            applied.append(f"supervisor_selected={supervisor.code}")
 
-            rec.save()
+        rec.save()
 
-            # 明細 upsert
-            for it in items:
-                cat = (it.get("category") or "").strip()
-                if not cat:
-                    continue
-                is_normal = bool(it.get("is_normal", True))
-                comment = (it.get("comment") or "").strip()
-                value = None
-                value_text = None
-                if cat == "temperature":
-                    raw = it.get("value", None)
-                    if raw not in ("", None):
-                        try:
-                            value = float(raw)
-                        except Exception:
-                            value = None
-                elif cat == "work_type":
-                    vtxt = it.get("value_text") or it.get("value")
-                    value_text = self._normalize_work_type(vtxt)
-                else:
-                    raw = it.get("value", None)
-                    if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.strip() != ""):
-                        try:
-                            value = float(raw)
-                        except Exception:
-                            value = None
+        # --- 明細 upsert（ここは従来通り。休日/退勤済でも許可） ---
+        for it in items:
+            cat = (it.get("category") or "").strip()
+            if not cat:
+                continue
+            is_normal = bool(it.get("is_normal", True))
+            comment = (it.get("comment") or "").strip()
+            value = None
+            value_text = None
+            if cat == "temperature":
+                raw = it.get("value", None)
+                if raw not in ("", None):
+                    try:
+                        value = float(raw)
+                    except Exception:
+                        value = None
+            elif cat == "work_type":
+                vtxt = it.get("value_text") or it.get("value")
+                value_text = self._normalize_work_type(vtxt)
+            else:
+                raw = it.get("value", None)
+                if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.strip() != ""):
+                    try:
+                        value = float(raw)
+                    except Exception:
+                        value = None
 
-                defaults = {"is_normal": is_normal, "value": value, "value_text": value_text, "comment": comment}
-                RecordItem.objects.update_or_create(record=rec, category=cat, defaults=defaults)
+            defaults = {"is_normal": is_normal, "value": value, "value_text": value_text, "comment": comment}
+            RecordItem.objects.update_or_create(record=rec, category=cat, defaults=defaults)
 
-            # 責任者確認
-            supervisor_confirmed = data.get("supervisor_confirmed", None)
-            if supervisor_confirmed is not None:
-                if supervisor_confirmed:
-                    SupervisorConfirmation.objects.update_or_create(
-                        record=rec, defaults={"confirmed_by": supervisor, "confirmed_at": timezone.now()}
-                    )
-                else:
-                    SupervisorConfirmation.objects.filter(record=rec).delete()
+        # --- 責任者確認（任意） ---
+        supervisor_confirmed = data.get("supervisor_confirmed", None)
+        if supervisor_confirmed is not None:
+            if supervisor_confirmed:
+                SupervisorConfirmation.objects.update_or_create(
+                    record=rec, defaults={"confirmed_by": supervisor, "confirmed_at": timezone.now()}
+                )
+                applied.append("supervisor_confirmed=True")
+            else:
+                SupervisorConfirmation.objects.filter(record=rec).delete()
+                applied.append("supervisor_confirmed=False")
 
-        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+        # UI 向けステータス
+        status_code = (
+            "off" if rec.is_off or rec.work_type == "off"
+            else ("left" if rec.work_end_time else ("arrived" if rec.work_start_time else "none"))
+        )
+        status_jp = {"off": "休み", "left": "退勤入力済", "arrived": "出勤入力済", "none": "-"}.get(status_code, "-")
+
+        return Response({
+            "id": rec.id,
+            "created": created,
+            "status": status_code,
+            "status_jp": status_jp,
+            "applied": applied,
+            "ignored": ignored,
+        }, status=status.HTTP_200_OK)
 
 # =========================
 # Calendar status (month)

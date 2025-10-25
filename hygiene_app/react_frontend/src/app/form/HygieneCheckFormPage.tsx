@@ -38,7 +38,6 @@ import {
   Shirt,
   ClipboardCheck,
   CheckCircle,
-  ChevronLeft,
   Home,
 } from "lucide-react";
 
@@ -66,6 +65,7 @@ type WorkType = "work" | "off";
 // 取得レコードを緩く受けるための型（ビルドエラー防止）
 type TodayRecordLike = {
   work_start_time?: string | null;
+  work_end_time?: string | null;
   status?: unknown;
   status_jp?: unknown;
   is_off?: unknown;
@@ -85,6 +85,9 @@ const isDayOffRecord = (rec: TodayRecordLike | null | undefined) => {
     /off/i.test(String(rec.work_type ?? ""))
   );
 };
+
+/* いまのローカル時刻を HH:mm:ss で返す（DRF TimeField はこのフォーマットでOK） */
+const nowHHMMSS = () => format(new Date(), "HH:mm:ss");
 
 /* ---------------- Top-level subcomponent ---------------- */
 type SectionProps = {
@@ -274,9 +277,13 @@ export default function DailyHygieneCheckForm() {
 
   // 勤務区分（出勤日／休み）
   const [workType, setWorkType] = useState<WorkType>("work");
-  useEffect(() => {
-    if (workType === "off" && currentStep !== 1) setCurrentStep(1);
-  }, [workType, currentStep]);
+
+  // 出勤・退勤・休み登録フラグ
+  const [isCheckedIn, setIsCheckedIn] = useState(false);
+  const [alreadyCheckedOut, setAlreadyCheckedOut] = useState(false); // 退勤登録済み
+  const [alreadyOff, setAlreadyOff] = useState(false);               // 休み登録済み
+  const isLocked = alreadyCheckedOut || alreadyOff;                  // ロック共通
+  const step1Locked = isCheckedIn || isLocked;
 
   // URL の employeeCode を初期選択（従業員一覧取得後に）
   useEffect(() => {
@@ -375,9 +382,6 @@ export default function DailyHygieneCheckForm() {
     },
   ]);
 
-  // 出勤済みかどうか
-  const [isCheckedIn, setIsCheckedIn] = useState(false);
-
   /* ---------- 既存レコードの反映（アダプター経由） ---------- */
 
   // RecordItem を既存 state に反映する小ユーティリティ
@@ -419,31 +423,28 @@ export default function DailyHygieneCheckForm() {
 
       const rec = (record ?? null) as TodayRecordLike | null;
 
+      // 状態判定
       const checkedIn = !!rec?.work_start_time;
-      setIsCheckedIn(checkedIn);
+      const checkedOut = !!rec?.work_end_time;
+      const offRegistered = isDayOffRecord(rec);
 
-      // 休みならフォームを「休日」モードに
-      if (isDayOffRecord(rec)) {
-        setWorkType("off");
+      setIsCheckedIn(checkedIn);
+      setAlreadyCheckedOut(checkedOut);
+      setAlreadyOff(offRegistered);
+
+      // 休みなら勤務区分を "off" に寄せる
+      if (offRegistered) setWorkType("off");
+
+      // 自動遷移
+      if (!offRegistered && checkedIn && !checkedOut) {
+        setCurrentStep(2);
+      } else {
+        setCurrentStep(1);
       }
 
       // 確認者コードが返ってきたら、未選択のときだけ自動セット
       if ((supervisorCode ?? "") !== "") {
         setBasicInfo((prev) => (prev.supervisor ? prev : { ...prev, supervisor: supervisorCode! }));
-      }
-
-      // 休日は退勤ステップに行けない
-      if (workType === "off" && currentStep === 2) {
-        alert("休日は退勤チェックができません。出勤日に切り替えるか、出勤時チェックのみ記録してください。");
-        setCurrentStep(1);
-        return;
-      }
-
-      // 出勤日でも未出勤なら退勤ステップに行けない
-      if (workType === "work" && currentStep === 2 && !checkedIn) {
-        alert("出勤登録がされていません。先に出勤チェックを完了してください。");
-        setCurrentStep(1);
-        return;
       }
 
       // 体温
@@ -493,7 +494,7 @@ export default function DailyHygieneCheckForm() {
       aborted = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [basicInfo.employee, employeeCodeParam, basicInfo.date, workType, currentStep]);
+  }, [basicInfo.employee, employeeCodeParam, basicInfo.date]);
 
   /* ---------- ヘルパ（関数型 setState 版） ---------- */
   const updateCheckItem = (
@@ -543,6 +544,11 @@ export default function DailyHygieneCheckForm() {
 
   /* ---------- 保存/送信 ---------- */
   const handleStep1Save = async () => {
+    if (isLocked) {
+      alert(alreadyOff ? "本日は「休み」登録済みです。" : "本日の退勤チェックは登録済みです。");
+      return;
+    }
+
     // バリデーション
     const lists =
       workType === "work"
@@ -596,7 +602,7 @@ export default function DailyHygieneCheckForm() {
     const payload = {
       employeeCode: basicInfo.employee,
       dateISO: basicInfo.date,
-      workStartTime: workType === "work" ? "08:30" : null,
+      workStartTime: workType === "work" ? nowHHMMSS() : null, // ← 現在時刻に変更
       workEndTime: null,
       items,
       supervisorCode: basicInfo.supervisor || null,
@@ -618,6 +624,11 @@ export default function DailyHygieneCheckForm() {
   };
 
   const handleFinalSubmit = async () => {
+    if (isLocked) {
+      alert(alreadyOff ? "本日は「休み」登録済みです。" : "本日の退勤チェックは登録済みです。");
+      return;
+    }
+
     const requireComment = postWorkChecks.some((i) => !i.checked && i.comment.trim() === "");
     if (requireComment) {
       alert("異常が報告されている項目について、詳細コメントが必要です。");
@@ -641,7 +652,7 @@ export default function DailyHygieneCheckForm() {
       employeeCode: basicInfo.employee,
       dateISO: basicInfo.date,
       workStartTime: null,
-      workEndTime: "17:30",
+      workEndTime: nowHHMMSS(), // ← 現在時刻に変更
       items: postWorkChecks.map((c) => ({
         category: c.id,
         is_normal: c.checked,
@@ -748,47 +759,85 @@ export default function DailyHygieneCheckForm() {
           <div className="mb-6">
             <h1 className="text-2xl font-medium text-gray-900 mb-4">健康管理チェックフォーム</h1>
 
+            {/* 既存登録アラート */}
+            {(alreadyCheckedOut || alreadyOff) && (
+              <div className="mb-4">
+                <Alert className="border-emerald-200 bg-emerald-50">
+                  <AlertDescription className="text-emerald-900 text-sm">
+                    {alreadyOff
+                      ? "本日は「休み」が登録済みです。再登録はできません。"
+                      : "本日の退勤チェックは登録済みです。再登録はできません。"}
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+
             {/* ステップ切替（出勤日のみ表示） */}
             {workType === "work" && (
               <div className="flex items-center justify-center mb-4 space-x-4">
+                {/* 出勤時チェックタブ */}
                 <Button
                   variant={currentStep === 1 ? "default" : "outline"}
+                  disabled={step1Locked && currentStep !== 1}  // 出勤済み以降は戻れない
+                  title={
+                    step1Locked && currentStep !== 1
+                      ? (alreadyOff
+                          ? "休み登録済みのため戻れません"
+                          : (alreadyCheckedOut
+                              ? "退勤登録済みのため戻れません"
+                              : "出勤登録済みのため戻れません"))
+                      : undefined
+                  }
                   className={`text-sm rounded-xl px-6 py-2 ${
                     currentStep === 1
                       ? "bg-blue-600 text-white hover:bg-blue-700"
                       : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
                   }`}
-                  onClick={() => setCurrentStep(1)}
+                  onClick={() => {
+                    if (step1Locked && currentStep !== 1) return;
+                    setCurrentStep(1);
+                  }}
                 >
                   出勤時チェック
                 </Button>
+
+                {/* 退勤時チェックタブ */}
                 <Button
                   variant={currentStep === 2 ? "default" : "outline"}
+                  disabled={isLocked || !isCheckedIn}
+                  title={
+                    isLocked
+                      ? (alreadyOff ? "休み登録済みのため操作できません" : "退勤登録済みのため操作できません")
+                      : (!isCheckedIn ? "出勤チェックを完了すると有効になります" : undefined)
+                  }
                   className={`text-sm rounded-xl px-6 py-2 ${
                     currentStep === 2
                       ? "bg-blue-600 text-white hover:bg-blue-700"
                       : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
                   }`}
-                  onClick={() => setCurrentStep(2)}
+                  onClick={() => {
+                    if (isLocked || !isCheckedIn) return;
+                    setCurrentStep(2);
+                  }}
                 >
                   退勤時チェック
                 </Button>
               </div>
             )}
 
-              <p className="text-gray-600 text-sm text-center">
-                {workType === "off"
-                  ? "休日の体調チェックのみを記録します（体温・体調チェック）"
-                  : currentStep === 1
-                  ? (
-                    <>
-                      原則として顔色等を見ながら対面チェックを行う・対面チェックが困難な場合は自己申告とする
-                      <br />出勤し作業に入る前にチェックする（異常なし✅、異常あり⬜︎）  異常ありの場合は責任者に申し出て不良内容と改善措置をコメントに記入する
-                      <br />※体調異常とは、下痢、嘔吐、腹痛、発熱、倦怠感、咳、くしゃみ等の呼吸器症状
-                    </>
-                  )
-                  : "作業後の確認項目をチェックしてください"}
-              </p>
+            <p className="text-gray-600 text-sm text-center">
+              {workType === "off"
+                ? "休日の体調チェックのみを記録します（体温・体調チェック）"
+                : currentStep === 1
+                ? (
+                  <>
+                    原則として顔色等を見ながら対面チェックを行う・対面チェックが困難な場合は自己申告とする
+                    <br />出勤し作業に入る前にチェックする（異常なし✅、異常あり⬜︎）  異常ありの場合は責任者に申し出て不良内容と改善措置をコメントに記入する
+                    <br />※体調異常とは、下痢、嘔吐、腹痛、発熱、倦怠感、咳、くしゃみ等の呼吸器症状
+                  </>
+                )
+                : "作業後の確認項目をチェックしてください"}
+            </p>
           </div>
 
           {/* Step 1 */}
@@ -856,14 +905,13 @@ export default function DailyHygieneCheckForm() {
                                   locale={ja}
                                   formatters={{ formatCaption }}
                                   mode="single"
-                                  month={month}
+                                  month={startOfMonth(parseISO(basicInfo.date))}
                                   selected={parseISO(basicInfo.date)}
                                   onSelect={(d) => {
                                     if (d) setBasicInfo((p) => ({ ...p, date: format(d, "yyyy-MM-dd") }));
                                   }}
                                   onMonthChange={(m) => {
                                     const first = startOfMonth(m);
-                                    setMonth(first);
                                     const code = basicInfo.employee || employeeCodeParam;
                                     if (code) loadMarks(first, code);
                                   }}
@@ -886,6 +934,7 @@ export default function DailyHygieneCheckForm() {
                         <Select
                           value={basicInfo.employee}
                           onValueChange={(code) => setBasicInfo({ ...basicInfo, employee: code })}
+                          disabled={step1Locked}
                         >
                           <SelectTrigger
                             className={`text-sm rounded-xl px-3 py-2 ${
@@ -919,6 +968,7 @@ export default function DailyHygieneCheckForm() {
                           <Select
                             value={basicInfo.supervisor || ""}
                             onValueChange={(code) => setBasicInfo({ ...basicInfo, supervisor: code })}
+                            disabled={step1Locked}
                           >
                             <SelectTrigger
                               className={`text-sm rounded-xl px-3 py-2 ${
@@ -949,7 +999,7 @@ export default function DailyHygieneCheckForm() {
                       {/* 勤務区分 */}
                       <div className="space-y-1">
                         <span className="text-gray-900 text-sm">勤務区分</span>
-                        <Select value={workType} onValueChange={(v) => setWorkType(v as WorkType)}>
+                        <Select value={workType} onValueChange={(v) => setWorkType(v as WorkType)} disabled={step1Locked}>
                           <SelectTrigger className="text-sm rounded-xl px-3 py-2 border-gray-300 bg-white">
                             <SelectValue placeholder="勤務区分" />
                           </SelectTrigger>
@@ -1010,6 +1060,7 @@ export default function DailyHygieneCheckForm() {
                           max="42.0"
                           value={basicInfo.temperature}
                           onChange={(e) => setBasicInfo({ ...basicInfo, temperature: e.target.value })}
+                          disabled={isLocked}
                           className={`w-24 text-sm rounded-xl ${
                             parseFloat(basicInfo.temperature) >= 37.5
                               ? "border-red-300 bg-red-50"
@@ -1040,6 +1091,7 @@ export default function DailyHygieneCheckForm() {
                               <Checkbox
                                 id={item.id}
                                 checked={item.checked}
+                                disabled={isLocked}
                                 onCheckedChange={(checked) =>
                                   updateCheckItem(setHealthChecks, item.id, checked as boolean)
                                 }
@@ -1066,6 +1118,7 @@ export default function DailyHygieneCheckForm() {
                                 id={`${item.id}-comment`}
                                 placeholder="症状や状況の詳細を記入してください"
                                 value={item.comment ?? ""}
+                                disabled={isLocked}
                                 onChange={(e) =>
                                   updateCheckItem(setHealthChecks, item.id, item.checked, e.target.value)
                                 }
@@ -1114,9 +1167,14 @@ export default function DailyHygieneCheckForm() {
               {/* 保存 */}
               <div className="flex justify-center mt-8 pb-8">
                 <Button
-                  disabled={saving}
+                  disabled={saving || isLocked}
                   onClick={handleStep1Save}
                   className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
+                  title={
+                    isLocked
+                      ? (alreadyOff ? "休み登録済みのため操作できません" : "退勤登録済みのため操作できません")
+                      : undefined
+                  }
                 >
                   <Save className="w-5 h-5" />
                   {workType === "work" ? "出勤時チェックを保存" : "休日の体調チェックを保存"}
@@ -1145,18 +1203,14 @@ export default function DailyHygieneCheckForm() {
 
               <div className="flex justify-center gap-4 pb-8">
                 <Button
-                  onClick={() => setCurrentStep(1)}
-                  variant="outline"
-                  className="border-gray-300 text-gray-700 hover:bg-gray-50 px-6 py-3 text-base rounded-xl gap-2"
-                >
-                  <ChevronLeft className="w-5 h-5" />
-                  出勤時チェックへ
-                </Button>
-                <Button
-                  disabled={saving || !isCheckedIn}
+                  disabled={saving || !isCheckedIn || isLocked}
                   onClick={handleFinalSubmit}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 text-base gap-2 shadow-lg rounded-xl"
-                  title={!isCheckedIn ? "出勤チェックを完了すると有効になります" : undefined}
+                  title={
+                    isLocked
+                      ? (alreadyOff ? "休み登録済みのため操作できません" : "退勤登録済みのため操作できません")
+                      : (!isCheckedIn ? "出勤チェックを完了すると有効になります" : undefined)
+                  }
                 >
                   <Save className="w-5 h-5" />
                   登録
