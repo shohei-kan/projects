@@ -27,7 +27,7 @@ import {
   patchSupervisorConfirm,
   filterRowsByOffice,
   getMonthRowsByEmployeeId,
-  getEmployeeActiveRange,   // ★ active_range 取得
+  getEmployeeActiveRange,
   type HygieneRecordRow,
   type EmployeeLite,
   clearDailyRecord,
@@ -35,7 +35,7 @@ import {
 
 type DetailItem = { category: string; label: string; section: string; is_normal: boolean; value: string | null }
 
-/** ★ Record PK を受け取るための拡張行型（DashboardView が返す recordId を想定） */
+/** Record PK を受け取るための拡張行型 */
 type RowWithRecordId = HygieneRecordRow & { recordId?: number | null }
 
 /** 詳細ダイアログ用の状態 */
@@ -49,12 +49,44 @@ const inputWithIcon = `${fieldBase} ${fieldMuted} pl-10`
 const chipOff = 'h-9 rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
 const chipOn = 'h-9 rounded-full bg-gray-400 text-white hover:bg-gray-300 border border-gray-900'
 
-const statusBadge = (s: HygieneRecordRow['status']) => {
-  const map: Record<HygieneRecordRow['status'], string> = {
+/* ===================== 英語→日本語の表示整形 ===================== */
+// ステータス英→日
+const STATUS_JP_MAP: Record<string, '出勤入力済' | '退勤入力済' | '休み' | '未入力'> = {
+  arrived: '出勤入力済',
+  left: '退勤入力済',
+  off: '休み',
+  none: '未入力',
+}
+const toJpStatus = (raw?: string | null): '出勤入力済' | '退勤入力済' | '休み' | '未入力' => {
+  if (!raw) return '未入力'
+  return STATUS_JP_MAP[raw] ?? ('未入力' as const)
+}
+// 表示用ステータス（statusJp/status_jp優先、なければ英語→日本語）
+const getStatusJp = (r: any): '出勤入力済' | '退勤入力済' | '休み' | '未入力' => {
+  return (r.statusJp as any) || (r.status_jp as any) || toJpStatus(r.status)
+}
+
+// 異常カテゴリ→日本語
+const CATEGORY_LABELS: Record<string, { label: string; section: string }> = {
+  temperature: { label: '体温', section: '体温・体調' },
+  no_health_issues: { label: '体調異常なし', section: '体温・体調' },
+  family_no_symptoms: { label: '同居者の症状なし', section: '体温・体調' },
+  no_respiratory_symptoms: { label: '咳・喉の腫れなし', section: '呼吸器' },
+  no_severe_hand_damage: { label: '手荒れ（重度）なし', section: '手指・爪' },
+  no_mild_hand_damage: { label: '手荒れ（軽度）なし', section: '手指・爪' },
+  nails_groomed: { label: '爪・ひげ整っている', section: '身だしなみ' },
+  proper_uniform: { label: '服装が正しい', section: '身だしなみ' },
+  no_work_illness: { label: '作業中の不調なし', section: '作業後' },
+  proper_handwashing: { label: '手洗い実施', section: '作業後' },
+}
+/* ============================================================= */
+
+const statusBadge = (s: '出勤入力済' | '退勤入力済' | '未入力' | '休み') => {
+  const map: Record<typeof s, string> = {
     出勤入力済: 'bg-blue-50 text-blue-700 border border-blue-200',
     退勤入力済: 'bg-green-50 text-green-700 border border-green-200',
     未入力: 'bg-slate-50 text-slate-700 border border-slate-200',
-    休み:  'bg-purple-50 text-purple-700 border border-purple-200',
+    休み: 'bg-purple-50 text-purple-700 border border-purple-200',
   }
   return <Badge variant="outline" className={`rounded-full px-2.5 py-0.5 ${map[s]}`}>{s}</Badge>
 }
@@ -84,14 +116,15 @@ const eachDay = (y: number, m: number) => {
   const nextFirst = new Date(Date.UTC(y, m, 1))
   const days: string[] = []
   for (let d = new Date(first); d < nextFirst; d.setUTCDate(d.getUTCDate() + 1)) {
-days.push(
-   new Intl.DateTimeFormat("en-CA", {
-     timeZone: "Asia/Tokyo",
-     year: "numeric",
-     month: "2-digit",
-     day: "2-digit",
-   }).format(d)
- )  }
+    days.push(
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Tokyo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d)
+    )
+  }
   return days
 }
 
@@ -161,7 +194,6 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
   const availableYears = useMemo(() => Array.from(new Set(availableYms.map(ym => ym.slice(0, 4)))), [availableYms])
   const monthsInSelectedYear = useMemo(() => availableYms.filter(ym => ym.startsWith(`${selectedYear}-`)).map(ym => ym.slice(5, 7)), [availableYms, selectedYear])
 
-  // 従業員が選ばれたら active_range を取得 → 年月セレクトに反映
   useEffect(() => {
     (async () => {
       if (mode !== 'monthly') return
@@ -170,7 +202,6 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
       const { startYm, endYm } = await getEmployeeActiveRange(empId)
       const yms = enumerateYm(startYm, endYm)
       setAvailableYms(yms)
-      // 既定は最新月（APIの endYm が最新でない実装もあるため列挙結果の末尾を優先）
       const latest = yms[yms.length - 1] || endYm
       if (latest) {
         const [y, m] = latest.split('-')
@@ -215,22 +246,18 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
           const empId = nameToId[selectedEmployee]
           if (!empId || !selectedYm) { setBaseRows([]); return }
 
-          // 参照する年月で読み込み
           const [yy, mm] = selectedYm.split('-').map(Number)
           const rows = await getMonthRowsByEmployeeId(empId, selectedYm)
 
-          // 月内の全日を生成し、当日まででクリップ
           const allDays = eachDay(yy, mm)
           const todayIso = TODAY_STR
           const days = allDays.filter(d => d <= todayIso)
 
-          // 既存レコードを日付キーに
           const byDate = new Map<string, RowWithRecordId>()
           for (const r of rows as RowWithRecordId[]) {
             byDate.set(r.date.slice(0, 10), r)
           }
 
-          // 全日を埋める（未存在日は未入力プレースホルダ）
           const filled: RowWithRecordId[] = days.map((d) => {
             const hit = byDate.get(d)
             if (hit) {
@@ -267,7 +294,8 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
       if (q && !r.employeeName.includes(q)) return false
       if (abnormalOnly && (r.abnormalItems?.length ?? 0) === 0) return false
       if (commentOnly && !r.hasAnyComment) return false
-      if (unsubmittedOnly && r.status !== '未入力') return false
+      // ステータスは日本語化してから判定
+      if (unsubmittedOnly && getStatusJp(r) !== '未入力') return false
       return true
     })
   }, [rows, q, abnormalOnly, commentOnly, unsubmittedOnly])
@@ -276,7 +304,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
     (r) => (r.abnormalItems?.length ?? 0) > 0 && !r.supervisorConfirmed
   ).length
 
-  const userRole: 'hq_admin' | 'branch_manager' = isHQ ? 'hq_admin' : 'branch_manager'
+  const isHQRole = isHQ ? 'hq_admin' : 'branch_manager'
   const userOffice = isHQ ? undefined : myOfficeName
 
   // 詳細
@@ -543,17 +571,19 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                   <TableBody className="[&_tr]:border-b [&_tr]:border-gray-100 [&_tr]:transition-colors [&_tr:hover]:!bg-gray-50">
                     {filtered.map((r) => {
                       const canToggle = canConfirmRow({
-                        role: isHQ ? 'hq_admin' : 'branch_manager',
+                        role: isHQRole,
                         row: r,
                         userOffice,
                         // 月次はレコード側の officeName が空のことがあるのでフォールバックを渡す
                         fallbackOffice: mode === 'monthly' ? selectedOffice : undefined,
                       })
 
-                      // ★ recordId が無い（記録未作成）場合は確認不可
+                      // recordId が無い（記録未作成）場合は確認不可
                       const canCheck = canToggle && !!r.recordId
 
-                      const abnormalLabels = r.abnormalItems ?? []
+                      // 異常カテゴリを日本語ラベルに変換
+                      const abnormalLabels = (r.abnormalItems ?? []).map((c: string) => CATEGORY_LABELS[c]?.label ?? c)
+
                       return (
                         <TableRow key={r.id}>
                           <TableCell className="font-medium">
@@ -563,29 +593,21 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                                 setDetail({ ...r, comment: '', items: [] })
                                 setDetailOpen(true)
 
-                                // ★ 詳細は Record PK で取得（未作成なら何もしない）
+                                // 詳細は Record PK で取得（未作成なら何もしない）
                                 if (!r.recordId) return
                                 const d = await getRecordDetail(r.recordId)
-
-                                const CATEGORY_LABELS: Record<string, {label: string; section: string}> = {
-                                  temperature: { label: '体温', section: '体温・体調' },
-                                  no_health_issues: { label: '体調異常なし', section: '体温・体調' },
-                                  family_no_symptoms: { label: '同居者の症状なし', section: '体温・体調' },
-                                  no_respiratory_symptoms: { label: '咳・喉の腫れなし', section: '呼吸器' },
-                                  no_severe_hand_damage: { label: '手荒れ（重度）なし', section: '手指・爪' },
-                                  no_mild_hand_damage: { label: '手荒れ（軽度）なし', section: '手指・爪' },
-                                  nails_groomed: { label: '爪・ひげ整っている', section: '身だしなみ' },
-                                  proper_uniform: { label: '服装が正しい', section: '身だしなみ' },
-                                  no_work_illness: { label: '作業中の不調なし', section: '作業後' },
-                                  proper_handwashing: { label: '手洗い実施', section: '作業後' },
-                                }
 
                                 const normalizeItems = (raw: any[]): DetailItem[] =>
                                   (Array.isArray(raw) ? raw : []).map((it: any) => {
                                     const cat = String(it?.category ?? it?.key ?? it?.code ?? '')
-                                    const meta = CATEGORY_LABELS[cat] ?? { label: cat, section: '' }
+                                    // サーバが category_jp を返している場合は最優先
+                                    const fromServerJp = (it as any)?.category_jp as string | undefined
+                                    const meta = fromServerJp
+                                      ? { label: fromServerJp, section: CATEGORY_LABELS[cat]?.section ?? '' }
+                                      : (CATEGORY_LABELS[cat] ?? { label: cat, section: '' })
                                     const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
-                                    const val = it?.comment ?? it?.value ?? null
+                                    // コメント優先、値テキストも拾う
+                                    const val = it?.comment ?? it?.value_text ?? it?.value ?? null
                                     return {
                                       category: cat,
                                       label: meta.label,
@@ -613,7 +635,8 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                           <TableCell className="text-gray-700">{abnormalLabels.length ? abnormalLabels.join(', ') : '-'}</TableCell>
                           <TableCell className="text-center text-lg text-red-400">{abnormalLabels.length ? '●' : ''}</TableCell>
                           <TableCell className="text-center">{r.hasAnyComment ? 'あり' : 'なし'}</TableCell>
-                          <TableCell>{statusBadge(r.status)}</TableCell>
+                          {/* ステータスは常に日本語化して表示 */}
+                          <TableCell>{statusBadge(getStatusJp(r))}</TableCell>
                           <TableCell className="text-center">
                             <Checkbox
                               title={
@@ -631,7 +654,6 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                                 // 楽観更新
                                 setBaseRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, supervisorConfirmed: checked } : x)))
                                 try {
-                                  // ★ トグルも Record PK を渡す
                                   await patchSupervisorConfirm(r.recordId!, checked)
                                 } catch {
                                   setBaseRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, supervisorConfirmed: !checked } : x)))
@@ -677,10 +699,10 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
                                 try {
                                   await clearDailyRecord({
                                     recordId: r.recordId,
-                                    employeeCode: (r as any)._employeeCode ?? undefined, // フォールバック用
+                                    employeeCode: (r as any)._employeeCode ?? undefined,
                                     dateISO: r.date,
                                   })
-                                  // 成功：楽観更新のまま
+                                  // 成功：そのまま
                                 } catch (e) {
                                   setBaseRows(prev) // ロールバック
                                   alert('クリアに失敗しました。権限やAPI実装をご確認ください。')

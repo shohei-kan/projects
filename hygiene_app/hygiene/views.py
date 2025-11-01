@@ -1,7 +1,7 @@
 # hygiene/views.py
 from datetime import date as _date
 from django.db import transaction,IntegrityError,models
-from django.db.models import Q, Count, Exists, OuterRef,Min, Max
+from django.db.models import Q, Count, Exists, OuterRef, Min, Max
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -25,18 +25,29 @@ from .serializers import (
 
 class OfficeViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    /api/offices/?q=横浜  などの軽い検索に対応（任意）
+GET /api/offices/?q=横浜
+    軽い検索に対応。安全側で values() を返し、Serializer 依存の例外を回避。
     """
     permission_classes = [permissions.AllowAny]
-    serializer_class = OfficeListSerializer
+    serializer_class = OfficeListSerializer  # 互換のため残すが list では未使用
 
     def get_queryset(self):
-        qs = Office.objects.only("id", "code", "name").order_by("code")
-        q = self.request.query_params.get("q")
+        # 余計な制限は外し、最小フィールドだけ select する
+        qs = Office.objects.all().only("id", "code", "name")
+        q = (self.request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(models.Q(name__icontains=q) | models.Q(code__icontains=q))
-        return qs
+        return qs.order_by("code")
 
+    # ★ 直返し（止血用）：Serializer を介さずに返すので 500 の元を断つ
+    def list(self, request, *args, **kwargs):
+        try:
+            qs = self.get_queryset()
+            rows = list(qs.values("id", "code", "name"))
+            return Response(rows, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"detail": "failed to list offices", "error": str(e)},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 # ★★★ 従業員 ViewSet：CRUD + フィルタ（office_name/name/code）
 class EmployeeViewSet(viewsets.ModelViewSet):
     queryset = Employee.objects.select_related("office").order_by("code")
@@ -93,15 +104,32 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
             Record.objects
             .select_related("employee", "employee__office", "supervisor_selected")
             .prefetch_related("items", "supervisor_confirmation", "supervisor_confirmation__confirmed_by")
-            .annotate(
-                supervisor_confirmed=Exists(
-                    SupervisorConfirmation.objects.filter(record_id=OuterRef("pk"))
-                )
-            )
         )
-
+        # ★ レコード単位の注釈を付与
+        qs = qs.annotate(
+            supervisor_confirmed=Exists(
+                SupervisorConfirmation.objects.filter(record_id=OuterRef("pk"))
+            ),
+            # ★ related_name は 'items'
+            abnormal_count=Count(
+                "items",
+                filter=Q(items__is_normal=False),
+                distinct=True,
+            ),
+            # ★ Float に "" を当てない：comment/value/value_text のどれかが入っていれば True
+            has_comment=Exists(
+                RecordItem.objects
+                .filter(record_id=OuterRef("pk"), is_normal=False)
+                .filter(
+                    Q(comment__isnull=False) & ~Q(comment="")  |
+                    Q(value__isnull=False)                    |
+                    Q(value_text__isnull=False)
+                )
+            ),
+        )
         p = self.request.query_params
         emp_code = (p.get("employee_code") or p.get("code") or "").strip()
+        emp_id   = (p.get("employee_id") or p.get("employee_pk") or p.get("employee") or "").strip()
         date_str = (p.get("date") or "").strip()
         month_str = (p.get("month") or "").strip()
         office_name = (p.get("office_name") or "").strip()
@@ -109,6 +137,8 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
 
         if emp_code:
             qs = qs.filter(employee__code__iexact=emp_code)
+        if emp_id:
+            qs = qs.filter(employee_id=emp_id)    
         if date_str:
             qs = qs.filter(date=date_str)
         elif month_str:

@@ -13,15 +13,17 @@ class RecordItemWriteSerializer(serializers.Serializer):
     value_text = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     comment = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
+
 class RecordWriteSerializer(serializers.Serializer):
     employee_code = serializers.CharField(max_length=20)
     date = serializers.DateField()
     work_start_time = serializers.TimeField(required=False, allow_null=True)
-    work_end_time   = serializers.TimeField(required=False, allow_null=True)
+    work_end_time = serializers.TimeField(required=False, allow_null=True)
     supervisor_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     supervisor_confirmed = serializers.BooleanField(required=False)
     work_type = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # "off" | "work"
     items = RecordItemWriteSerializer(many=True, required=False)
+
 
 # ===== Office =====
 class OfficeSerializer(serializers.ModelSerializer):
@@ -29,20 +31,31 @@ class OfficeSerializer(serializers.ModelSerializer):
         model = Office
         fields = "__all__"
 
+
 # オフィス一覧（安全に最小限）
 class OfficeListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Office
         fields = ("id", "code", "name")
 
+
 # ===== Employee（読み取り）=====
 class EmployeeSerializer(serializers.ModelSerializer):
     office_name = serializers.CharField(source="office.name", read_only=True)
+    position_jp = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
-        fields = ("id", "code", "name", "office", "office_name", "position")
-        read_only_fields = ("office_name",)
+        fields = ("id", "code", "name", "office", "office_name", "position", "position_jp")
+        read_only_fields = ("office_name", "position_jp")
+
+    def get_position_jp(self, obj):
+        # choices の日本語表示
+        try:
+            return obj.get_position_display()
+        except Exception:
+            return None
+
 
 # ===== Employee（書き込み：POST/PATCH）=====
 class EmployeeWriteSerializer(serializers.ModelSerializer):
@@ -60,7 +73,7 @@ class EmployeeWriteSerializer(serializers.ModelSerializer):
 
     JP_TO_CODE = {
         "一般": "general",
-        "副所長": "deputy_manager",   # ← ここは deputy_manager
+        "副所長": "deputy_manager",
         "所長": "branch_admin",
         "本部": "manager",
     }
@@ -109,12 +122,32 @@ class EmployeeWriteSerializer(serializers.ModelSerializer):
 
         return attrs
 
+
 # ===== RecordItem（読み取り）=====
 class RecordItemSerializer(serializers.ModelSerializer):
+    category_jp = serializers.SerializerMethodField()
+
     class Meta:
         model = RecordItem
-        fields = ("id", "category", "is_normal", "value", "value_text", "comment")
+        fields = ("id", "category", "category_jp", "is_normal", "value", "value_text", "comment")
         read_only_fields = fields
+
+    CATEGORY_JP = {
+        "temperature": "体温",
+        "no_health_issues": "体調に問題なし",
+        "family_no_symptoms": "同居家族に症状なし",
+        "no_respiratory_symptoms": "咳・喉などの症状なし",
+        "no_severe_hand_damage": "手指の重度損傷なし",
+        "no_mild_hand_damage": "手指の軽度損傷なし",
+        "nails_groomed": "爪の清潔・整備",
+        "proper_uniform": "適切なユニフォーム",
+        "no_work_illness": "就業禁止疾患なし",
+        "proper_handwashing": "適切な手洗い",
+        "work_type": "勤務区分",
+    }
+
+    def get_category_jp(self, obj):
+        return self.CATEGORY_JP.get(obj.category, obj.category)
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
@@ -145,6 +178,7 @@ class RecordItemSerializer(serializers.ModelSerializer):
                 pass
         return attrs
 
+
 # ===== Record（読み取り）=====
 class RecordSerializer(serializers.ModelSerializer):
     items = RecordItemSerializer(many=True, read_only=True)
@@ -152,18 +186,36 @@ class RecordSerializer(serializers.ModelSerializer):
     supervisor_confirmed = serializers.SerializerMethodField()
     is_off = serializers.BooleanField(read_only=True)
     work_type = serializers.CharField(read_only=True)
+    work_type_jp = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     status_jp = serializers.SerializerMethodField()
+    statusJp = serializers.SerializerMethodField()  # camelCase 互換
+    has_comment = serializers.BooleanField(read_only=True)
+    abnormal_count = serializers.IntegerField(read_only=True)
+    abnormal_items = serializers.SerializerMethodField()
 
     class Meta:
         model = Record
         fields = (
-            "id", "date", "employee",
-            "work_start_time", "work_end_time",
+            "id",
+            "date",
+            "employee",
+            "work_start_time",
+            "work_end_time",
             "items",
-            "supervisor_selected", "supervisor_code", "supervisor_confirmed",
-            "is_off", "work_type",
-            "status", "status_jp",
+            "supervisor_selected",
+            "supervisor_code",
+            "supervisor_confirmed",
+            "is_off",
+            "work_type",
+            "work_type_jp",
+            "status",
+            "status_jp",
+            "statusJp",
+            # ↓ 一覧で使う派生値
+            "has_comment",
+            "abnormal_count",
+            "abnormal_items",
         )
         read_only_fields = fields
 
@@ -196,9 +248,38 @@ class RecordSerializer(serializers.ModelSerializer):
         return self._status_code(obj)
 
     def get_status_jp(self, obj):
-        return {"off": "休み", "left": "退勤入力済", "arrived": "出勤入力済", "none": "-"}.get(
-            self._status_code(obj), "-"
-        )
+        return {
+            "off": "休み",
+            "left": "退勤入力済",
+            "arrived": "出勤入力済",
+            "none": "-",
+        }.get(self._status_code(obj), "-")
+
+    def get_statusJp(self, obj):
+        # camelCase 名でも同じ値を返す（フロント互換）
+        return self.get_status_jp(obj)
+
+    def get_work_type_jp(self, obj):
+        wt = getattr(obj, "work_type", None)
+        if wt == "off":
+            return "休み"
+        if wt == "work":
+            return "勤務"
+        return None
+
+    def get_abnormal_items(self, obj):
+        """
+        is_normal=False のカテゴリ配列（重複除去）
+        """
+        qs = RecordItem.objects.filter(record=obj, is_normal=False).values_list("category", flat=True)
+        seen, out = set(), []
+        for c in qs:
+            s = "" if c is None else str(c)
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
 
 # ===== SupervisorConfirmation =====
 class SupervisorConfirmationSerializer(serializers.ModelSerializer):
