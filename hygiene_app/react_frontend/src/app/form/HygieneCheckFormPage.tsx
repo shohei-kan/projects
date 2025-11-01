@@ -267,7 +267,7 @@ export default function DailyHygieneCheckForm() {
 
   /* ---------- 基本情報（フォームヘッダー） ---------- */
   const [basicInfo, setBasicInfo] = useState({
-    date: new Date(TODAY_STR).toISOString().split("T")[0],
+    date: TODAY_STR,
     employee: "",
     supervisor: "",
     temperature: "36.0",

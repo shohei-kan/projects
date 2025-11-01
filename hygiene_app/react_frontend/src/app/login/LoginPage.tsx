@@ -129,7 +129,7 @@ export default function LoginForm(): JSX.Element {
 
       const payload: SessionPayload = {
         isLoggedIn: true,
-        loginDate: new Date(TODAY_STR).toISOString().slice(0, 10),
+        loginDate: TODAY_STR,
         user: {
           role: "branch_manager", // 社内運用に合わせて "employee" に変更可
           userId: branch.code,    // 共有アカウントなら code をID代用
@@ -156,7 +156,7 @@ export default function LoginForm(): JSX.Element {
 
       const payload: SessionPayload = {
         isLoggedIn: true,
-        loginDate: new Date(TODAY_STR).toISOString().slice(0, 10),
+        loginDate: TODAY_STR,
         user: {
           role: "hq_admin",
           userId: admin.id,

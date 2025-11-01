@@ -84,8 +84,14 @@ const eachDay = (y: number, m: number) => {
   const nextFirst = new Date(Date.UTC(y, m, 1))
   const days: string[] = []
   for (let d = new Date(first); d < nextFirst; d.setUTCDate(d.getUTCDate() + 1)) {
-    days.push(d.toISOString().slice(0, 10))
-  }
+days.push(
+   new Intl.DateTimeFormat("en-CA", {
+     timeZone: "Asia/Tokyo",
+     year: "numeric",
+     month: "2-digit",
+     day: "2-digit",
+   }).format(d)
+ )  }
   return days
 }
 
@@ -117,7 +123,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
   }, [isHQ, myBranchCode])
 
   // 日次用
-  const [selectedDate, setSelectedDate] = useState(new Date(TODAY_STR).toISOString().slice(0, 10))
+  const [selectedDate, setSelectedDate] = useState(TODAY_STR)
 
   const [selectedOffice, setSelectedOffice] = useState<string>(isHQ ? '' : '')
   useEffect(() => { if (!isHQ && myOfficeName) setSelectedOffice(myOfficeName) }, [isHQ, myOfficeName])
@@ -215,7 +221,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
 
           // 月内の全日を生成し、当日まででクリップ
           const allDays = eachDay(yy, mm)
-          const todayIso = new Date(TODAY_STR).toISOString().slice(0, 10)
+          const todayIso = TODAY_STR
           const days = allDays.filter(d => d <= todayIso)
 
           // 既存レコードを日付キーに
