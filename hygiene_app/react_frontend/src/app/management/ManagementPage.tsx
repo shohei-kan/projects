@@ -49,8 +49,8 @@ const inputWithIcon = `${fieldBase} ${fieldMuted} pl-10`
 const chipOff = 'h-9 rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
 const chipOn = 'h-9 rounded-full bg-gray-400 text-white hover:bg-gray-300 border border-gray-900'
 
-/* ===================== 英語→日本語の表示整形 ===================== */
-// ステータス英→日
+/* ===================== 表示整形 ===================== */
+// ステータス英→日（サーバが英語コードの場合の保険）
 const STATUS_JP_MAP: Record<string, '出勤入力済' | '退勤入力済' | '休み' | '未入力'> = {
   arrived: '出勤入力済',
   left: '退勤入力済',
@@ -61,8 +61,11 @@ const toJpStatus = (raw?: string | null): '出勤入力済' | '退勤入力済' 
   if (!raw) return '未入力'
   return STATUS_JP_MAP[raw] ?? ('未入力' as const)
 }
-// 表示用ステータス（statusJp/status_jp優先、なければ英語→日本語）
+// 行データから最終表示ステータスを決定
 const getStatusJp = (r: any): '出勤入力済' | '退勤入力済' | '休み' | '未入力' => {
+  // 既に日本語（アダプタの union）ならそれを優先
+  if (r?.status && ['出勤入力済', '退勤入力済', '休み', '未入力'].includes(r.status)) return r.status
+  // 次点：statusJp/status_jp → なければ英語コードを丸め
   return (r.statusJp as any) || (r.status_jp as any) || toJpStatus(r.status)
 }
 
@@ -79,7 +82,7 @@ const CATEGORY_LABELS: Record<string, { label: string; section: string }> = {
   no_work_illness: { label: '作業中の不調なし', section: '作業後' },
   proper_handwashing: { label: '手洗い実施', section: '作業後' },
 }
-/* ============================================================= */
+/* =================================================== */
 
 const statusBadge = (s: '出勤入力済' | '退勤入力済' | '未入力' | '休み') => {
   const map: Record<typeof s, string> = {
@@ -144,22 +147,37 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
   const [officeNames, setOfficeNames] = useState<string[]>([])
   const [myOfficeName, setMyOfficeName] = useState<string>('')
 
-  useEffect(() => {
-    (async () => {
-      const names = await getOfficeNames()
-      setOfficeNames(names)
-      if (!isHQ && myBranchCode) {
-        const n = await getBranchNameByCode(myBranchCode)
-        setMyOfficeName(n)
-      }
-    })()
-  }, [isHQ, myBranchCode])
-
   // 日次用
   const [selectedDate, setSelectedDate] = useState(TODAY_STR)
+  const [selectedOffice, setSelectedOffice] = useState<string>('')
 
-  const [selectedOffice, setSelectedOffice] = useState<string>(isHQ ? '' : '')
-  useEffect(() => { if (!isHQ && myOfficeName) setSelectedOffice(myOfficeName) }, [isHQ, myOfficeName])
+  // 1) 初期ロード：営業所一覧・自拠点名 → selectedOffice セット（HQ は先頭、支店は自拠点）
+  useEffect(() => {
+    (async () => {
+      try {
+        const names = await getOfficeNames()
+        setOfficeNames(names)
+
+        if (isHQ) {
+          const initial = selectedOffice || names[0] || ''
+          setSelectedOffice(initial)
+          console.debug('[ui/init] HQ office init =', initial)
+        } else {
+          if (!myBranchCode) {
+            console.debug('[ui/init] branch manager but branchCode is empty')
+            return
+          }
+          const n = await getBranchNameByCode(myBranchCode)
+          setMyOfficeName(n)
+          setSelectedOffice(n || '')
+          console.debug('[ui/init] branch office init =', n)
+        }
+      } catch (e) {
+        console.debug('[ui/init] failed to load offices', e)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHQ, myBranchCode])
 
   // 従業員（構造化）
   const [employees, setEmployees] = useState<EmployeeLite[]>([])
@@ -167,18 +185,20 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
   const [idToName, setIdToName] = useState<Record<string, string>>({})
   const employeeOptions = useMemo(() => employees.map(e => e.name), [employees])
 
+  // 2) 営業所選択変更時に従業員をロード
   useEffect(() => {
     (async () => {
       if (!selectedOffice) { setEmployees([]); setNameToId({}); setIdToName({}); return }
       const list = await getEmployeesForOffice(selectedOffice)
-      setEmployees(list)
       const n2i: Record<string, string> = {}
       const i2n: Record<string, string> = {}
       for (const e of list) { n2i[e.name] = e.id; i2n[e.id] = e.name }
-      setNameToId(n2i); setIdToName(i2n)
+      setEmployees(list); setNameToId(n2i); setIdToName(i2n)
+      console.debug('[ui/emp] office=', selectedOffice, 'count=', list.length, 'sample=', list[0])
     })()
   }, [selectedOffice])
 
+  // 月次：従業員の初期選択
   const [selectedEmployee, setSelectedEmployee] = useState<string>('')
   useEffect(() => {
     if (mode === 'monthly' && !selectedEmployee && employees.length > 0) {
@@ -208,6 +228,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
         setSelectedYear(y)
         setSelectedMonth(m)
       }
+      console.debug('[ui/month-range]', { empId, startYm, endYm, yms_count: yms.length })
     })()
   }, [mode, selectedEmployee, nameToId])
   // ▲▲ 月次：active_range 終了 ▲▲
@@ -232,17 +253,20 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
       return r
     })
 
-  // 取得
+  // 3) データ取得（モード別）
   useEffect(() => {
     (async () => {
       setLoading(true)
       try {
         if (mode === 'daily') {
           if (!selectedOffice || !selectedDate) { setBaseRows([]); return }
-          const raw = await getDailyRowsAllEmployees(selectedOffice, selectedDate)
-          const strict = await filterRowsByOffice(raw, selectedOffice)
-          setBaseRows(fixNames(strict as RowWithRecordId[]))
-        } else {
+            const rowsAll = await getDailyRowsAllEmployees(selectedOffice, selectedDate)
+            console.info('[daily] office=', selectedOffice, 'date=', selectedDate, {
+              employees_count: employees.length,
+              rows_count: Array.isArray(rowsAll) ? rowsAll.length : 'n/a',
+              first: rowsAll?.[0],
+            })
+            setBaseRows(fixNames(rowsAll as RowWithRecordId[]))        } else {
           const empId = nameToId[selectedEmployee]
           if (!empId || !selectedYm) { setBaseRows([]); return }
 
@@ -261,10 +285,7 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
           const filled: RowWithRecordId[] = days.map((d) => {
             const hit = byDate.get(d)
             if (hit) {
-              return {
-                ...hit,
-                officeName: hit.officeName || selectedOffice,
-              }
+              return { ...hit, officeName: hit.officeName || selectedOffice }
             }
             return {
               id: `${d}-${empId}`,
@@ -279,13 +300,19 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
             }
           })
 
+          console.debug('[ui/monthly] empId=', empId, 'ym=', selectedYm, {
+            api_count: rows.length,
+            filled_count: filled.length,
+            first: filled[0]
+          })
+
           setBaseRows(fixNames(filled))
         }
       } finally {
         setLoading(false)
       }
     })()
-  }, [mode, selectedOffice, selectedDate, selectedEmployee, selectedYm, nameToId, idToName])
+  }, [mode, selectedOffice, selectedDate, selectedEmployee, selectedYm, nameToId, idToName, employees.length])
 
   const rows = baseRows
 
@@ -294,7 +321,6 @@ export default function HygieneManagement({ onEmployeeListClick, onBackToDashboa
       if (q && !r.employeeName.includes(q)) return false
       if (abnormalOnly && (r.abnormalItems?.length ?? 0) === 0) return false
       if (commentOnly && !r.hasAnyComment) return false
-      // ステータスは日本語化してから判定
       if (unsubmittedOnly && getStatusJp(r) !== '未入力') return false
       return true
     })

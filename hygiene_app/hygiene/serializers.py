@@ -193,6 +193,9 @@ class RecordSerializer(serializers.ModelSerializer):
     has_comment = serializers.BooleanField(read_only=True)
     abnormal_count = serializers.IntegerField(read_only=True)
     abnormal_items = serializers.SerializerMethodField()
+    office_name = serializers.CharField(source="employee.office.name", read_only=True)
+    office_code = serializers.CharField(source="employee.office.code", read_only=True)
+
 
     class Meta:
         model = Record
@@ -216,6 +219,8 @@ class RecordSerializer(serializers.ModelSerializer):
             "has_comment",
             "abnormal_count",
             "abnormal_items",
+            "office_name", 
+            "office_code",
         )
         read_only_fields = fields
 

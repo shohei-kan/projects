@@ -97,63 +97,45 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 # ★★★ Record 一覧（supervisor_confirmed を annotate）
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RecordSerializer
-    permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
         qs = (
             Record.objects
             .select_related("employee", "employee__office", "supervisor_selected")
-            .prefetch_related("items", "supervisor_confirmation", "supervisor_confirmation__confirmed_by")
+            .prefetch_related("items")
+            .order_by("date", "employee__office__code", "employee__code")  # 安定ソート
         )
-        # ★ レコード単位の注釈を付与
-        qs = qs.annotate(
-            supervisor_confirmed=Exists(
-                SupervisorConfirmation.objects.filter(record_id=OuterRef("pk"))
-            ),
-            # ★ related_name は 'items'
-            abnormal_count=Count(
-                "items",
-                filter=Q(items__is_normal=False),
-                distinct=True,
-            ),
-            # ★ Float に "" を当てない：comment/value/value_text のどれかが入っていれば True
-            has_comment=Exists(
-                RecordItem.objects
-                .filter(record_id=OuterRef("pk"), is_normal=False)
-                .filter(
-                    Q(comment__isnull=False) & ~Q(comment="")  |
-                    Q(value__isnull=False)                    |
-                    Q(value_text__isnull=False)
-                )
-            ),
-        )
-        p = self.request.query_params
-        emp_code = (p.get("employee_code") or p.get("code") or "").strip()
-        emp_id   = (p.get("employee_id") or p.get("employee_pk") or p.get("employee") or "").strip()
-        date_str = (p.get("date") or "").strip()
-        month_str = (p.get("month") or "").strip()
-        office_name = (p.get("office_name") or "").strip()
-        office_code = (p.get("office_code") or "").strip()
 
-        if emp_code:
-            qs = qs.filter(employee__code__iexact=emp_code)
-        if emp_id:
-            qs = qs.filter(employee_id=emp_id)    
-        if date_str:
-            qs = qs.filter(date=date_str)
-        elif month_str:
-            try:
-                y, m = map(int, month_str.split("-"))
-                qs = qs.filter(date__year=y, date__month=m)
-            except Exception:
-                pass
+        qp = self.request.query_params
+
+        # --- 日付で絞り込み（単日）---
+        date = qp.get("date")
+        if date:
+            qs = qs.filter(date=date)
+
+        # --- 営業所パラメータ（複数のキーゆれを吸収）---
+        office_code = qp.get("office_code")
+        office_name = qp.get("office_name") or qp.get("office") or qp.get("branch") or qp.get("branch_name")
+
         if office_code:
-            qs = qs.filter(employee__office__code__iexact=office_code)
-        if office_name:
-            qs = qs.filter(Q(employee__office__name__iexact=office_name) | Q(employee__office__code__iexact=office_name))
+            qs = qs.filter(employee__office__code=office_code)
+        elif office_name:
+            qs = qs.filter(employee__office__name=office_name.strip())
 
-        return qs.order_by("-date", "employee__code")
+        # --- 個人指定（管理画面の個別月次などで使うかも）---
+        employee_code = qp.get("employee_code") or qp.get("employee")
+        if employee_code:
+            qs = qs.filter(employee__code=str(employee_code))
 
+        # --- （任意）支店管理者ならトークン/ユーザー属性で強制フィルタ ---
+        # ユーザーモデル側に branch.code がある場合のみ有効
+        user = getattr(self.request, "user", None)
+        branch_code = getattr(getattr(user, "branch", None), "code", None)
+        # is_superuser や HQ 権限の判定はプロジェクトの権限設計に合わせて調整
+        if branch_code and not getattr(user, "is_superuser", False):
+            qs = qs.filter(employee__office__code=branch_code)
+
+        return qs
 
 class SupervisorConfirmationViewSet(viewsets.ModelViewSet):
     queryset = SupervisorConfirmation.objects.select_related("record", "confirmed_by")

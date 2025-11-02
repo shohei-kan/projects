@@ -1,4 +1,5 @@
 // src/lib/hygieneAdminAdapter.ts
+
 /** ================= 共通ヘルパ ================= */
 const toStr = (v: any) => (v == null ? "" : String(v))
 const pickList = (res: any) => {
@@ -46,11 +47,12 @@ export type HygieneRecordRow = {
   supervisorConfirmed: boolean
   abnormalItems: string[]
   hasAnyComment: boolean
+  /** backend の Record PK（未作成= null） */
+  recordId?: number | null
 }
 
 // 内部用：正規化後の補助キー（UIには出さない）
 type NormalizedRow = HygieneRecordRow & {
-  recordId?: number | null
   _officeCode?: string
   _officeId?: string
   _employeeId?: string
@@ -134,7 +136,173 @@ function patchEmployeeName(row: NormalizedRow) {
   return row
 }
 
+/** ------------- 詳細API 正規化＆キャッシュ（堅牢版） ------------- **/
+const CATEGORY_DICT: Record<string, { label: string; section: string }> = {
+  temperature: { label: "体温", section: "体温・体調" },
+  no_health_issues: { label: "体調異常なし", section: "体温・体調" },
+  family_no_symptoms: { label: "同居者の症状なし", section: "体温・体調" },
+  no_respiratory_symptoms: { label: "咳・喉の腫れなし", section: "呼吸器" },
+  no_severe_hand_damage: { label: "手荒れ（重度）なし", section: "手指・爪" },
+  no_mild_hand_damage: { label: "手荒れ（軽度）なし", section: "手指・爪" },
+  nails_groomed: { label: "爪・ひげ整っている", section: "身だしなみ" },
+  proper_uniform: { label: "服装が正しい", section: "身だしなみ" },
+  no_work_illness: { label: "作業中の不調なし", section: "作業後" },
+  proper_handwashing: { label: "手洗い実施", section: "作業後" },
+}
+
+const DETAIL_CACHE = new Map<string, any>()
+
+const toLabelJa = (cat: string, fallback?: string) =>
+  CATEGORY_DICT[cat]?.label ?? (fallback || cat)
+const toSectionJa = (cat: string) => CATEGORY_DICT[cat]?.section ?? ""
+
 /** ================= 正規化 ================= */
+function normalizeItems(raw: any): Array<{
+  category: string
+  label: string
+  section: string
+  is_normal: boolean
+  value: string | null
+}> {
+  const src: any[] = Array.isArray(raw) ? raw : []
+  return src.map((it) => {
+    const cat = String(it?.category ?? it?.key ?? it?.code ?? "")
+    const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
+    const rawVal = it?.value ?? it?.comment ?? null
+    const val = rawVal == null ? null : String(rawVal)
+    return {
+      category: cat,
+      label: toLabelJa(cat, String(it?.label ?? "")),
+      section: toSectionJa(cat),
+      is_normal: isNormal,
+      value: val,
+    }
+  })
+}
+
+function buildDetailFromRecord(rec: any, itemsOverride?: any[]) {
+  const itemsRaw =
+    itemsOverride ??
+    (Array.isArray(rec?.items)
+      ? rec.items
+      : Array.isArray(rec?.record_items)
+      ? rec.record_items
+      : [])
+  const items = normalizeItems(itemsRaw)
+
+  const comment =
+    items
+      .filter((x) => !x.is_normal && x.value)
+      .map((x) => `${x.label}: ${x.value}`)
+      .join(" ／ ") || ""
+
+  const employeeName =
+    rec?.employee_name ?? rec?.employee?.name ?? rec?.user_name ?? rec?.name ?? ""
+  const officeName = rec?.office_name ?? rec?.branch_name ?? rec?.office?.name ?? ""
+  const date = String(rec?.date ?? rec?.record_date ?? "").slice(0, 10)
+
+  return { items, comment, employeeName, officeName, date }
+}
+
+async function fetchItemsByRecordId(id: string | number) {
+  const paths = [
+    `/records/${id}/items/`,
+    `/records/${id}/items`,
+    `/record_items/?record=${encodeURIComponent(String(id))}`,
+    `/record_items/?record_id=${encodeURIComponent(String(id))}`,
+  ]
+  for (const p of paths) {
+    try {
+      const res = await apiGet<any>(p)
+      const list = Array.isArray(res)
+        ? res
+        : Array.isArray(res?.results)
+        ? res.results
+        : Array.isArray(res?.items)
+        ? res.items
+        : Array.isArray(res?.rows)
+        ? res.rows
+        : Array.isArray(res?.data)
+        ? res.data
+        : []
+      if (list.length) return list
+    } catch {
+      /* 次へ */
+    }
+  }
+  return []
+}
+
+// 置き換え：期待する従業員ID/コード/氏名でポストフィルタする版
+async function fetchRecordDetailForRow(row: NormalizedRow): Promise<any | null> {
+  const key = String(row.recordId != null ? row.recordId : row.id)
+  if (DETAIL_CACHE.has(key)) return DETAIL_CACHE.get(key)
+
+  // 1) Record PK がある → /records/:id を最優先
+  if (row.recordId != null) {
+    for (const path of [`/records/${row.recordId}/`, `/records/${row.recordId}`]) {
+      try {
+        const d = await apiGet<any>(path)
+        DETAIL_CACHE.set(key, d)
+        return d
+      } catch {}
+    }
+  }
+
+  // 2) 合成キー（date-emp or emp-date）から date/emp を抽出
+  let datePart: string | null = null, empPart: string | null = null
+  const mDateEmp = String(row.id).match(/^(\d{4}-\d{2}-\d{2})-(\d+)$/)
+  const mEmpDate = String(row.id).match(/^(\d+)-(\d{4}-\d{2}-\d{2})$/)
+  if (mDateEmp) { datePart = mDateEmp[1]; empPart = mDateEmp[2] }
+  if (mEmpDate) { datePart = mEmpDate[2]; empPart = mEmpDate[1] }
+
+  // 期待する従業員ヒント（優先順：_employeeId → _employeeCode → employeeName）
+  const wantId   = row._employeeId ? String(row._employeeId) : null
+  const wantCode = row._employeeCode ? String(row._employeeCode) : null
+  const wantName = row.employeeName || null
+
+  // 3) パラメータ検索 → 必ずポストフィルタで本人のレコードだけ採用
+  if (datePart) {
+    const qsDate = encodeURIComponent(datePart)
+    const candPaths = [
+      wantId   && `/records/?employee_id=${encodeURIComponent(wantId)}&date=${qsDate}`,
+      wantCode && `/records/?employee_code=${encodeURIComponent(wantCode)}&date=${qsDate}`,
+      empPart  && `/records/?employee_id=${encodeURIComponent(empPart)}&date=${qsDate}`,
+      empPart  && `/records/?employee=${encodeURIComponent(empPart)}&date=${qsDate}`,
+    ].filter(Boolean) as string[]
+
+    for (const p of candPaths) {
+      try {
+        const list = await apiGet<any>(p)
+        const arr: any[] = Array.isArray(list)
+          ? list
+          : Array.isArray(list?.results) ? list.results
+          : Array.isArray(list?.records) ? list.records
+          : []
+
+        // --- ポストフィルタ：ID/コード/氏名で本人に絞る ---
+        const hit = arr.find((rec) => {
+          const rid   = String(rec?.employee_id ?? rec?.employee?.id ?? "")
+          const rcode = String(rec?.employee_code ?? rec?.employee?.code ?? "")
+          const rname = String(rec?.employee_name ?? rec?.employee?.name ?? "")
+          if (wantId   && rid   && rid   === wantId)   return true
+          if (wantCode && rcode && rcode === wantCode) return true
+          if (!wantId && !wantCode && wantName && rname && rname === wantName) return true
+          return false
+        })
+
+        if (hit) {
+          DETAIL_CACHE.set(key, hit)
+          return hit
+        }
+      } catch {}
+    }
+  }
+
+  DETAIL_CACHE.set(key, null)
+  return null
+}
+/** ================= 正規化（一覧行） ================= */
 function normalizeRow(x: any): NormalizedRow {
   const id =
     x?.id ??
@@ -143,17 +311,16 @@ function normalizeRow(x: any): NormalizedRow {
     x?.pk ??
     `${toStr(x?.employee_name ?? x?.employee ?? "")}-${toStr(x?.date ?? x?.record_date ?? "")}`
 
-  // recordId を拾う（数値化を試みる）
+  // recordId を拾う（数値化を試みる）+ フォールバック
   const recIdRaw = x?.recordId ?? x?.record_id
-let recordId: number | null =
-   recIdRaw == null ? null : Number.isFinite(Number(recIdRaw)) ? Number(recIdRaw) : null
- // ★ フォールバック：recordId が無い時、id が数値ならそれを Record PK とみなす
- if (recordId == null) {
-   const idNum = Number(id)
-   if (Number.isFinite(idNum)) recordId = idNum
- }
-  const officeCodeRaw =
-    x?.office_code ?? x?.branch_code ?? x?.office?.code ?? x?.branch?.code
+  let recordId: number | null =
+    recIdRaw == null ? null : Number.isFinite(Number(recIdRaw)) ? Number(recIdRaw) : null
+  if (recordId == null) {
+    const idNum = Number(id)
+    if (Number.isFinite(idNum)) recordId = idNum
+  }
+
+  const officeCodeRaw = x?.office_code ?? x?.branch_code ?? x?.office?.code ?? x?.branch?.code
   const officeIdRaw = x?.office_id ?? x?.branch_id ?? x?.office?.id ?? x?.branch?.id
 
   const empIdRaw = x?.employee ?? x?.employee_id ?? x?.user_id ?? x?.employee?.id
@@ -185,21 +352,23 @@ let recordId: number | null =
     x?.supervisorConfirmed ?? x?.supervisor_confirmed ?? x?.confirmed ?? false,
   )
 
-  const abnormalSrc =
-    x?.abnormalItems ?? x?.abnormal_items ?? x?.abnormal_labels ?? x?.abnormal ?? []
-  const abnormalItems: string[] = Array.isArray(abnormalSrc)
-    ? abnormalSrc.map((s: any) => toStr(s)).filter(Boolean)
-    : []
-
+  // --- status の丸め（英語コードも吸収） ---
   type StatusLiteral = HygieneRecordRow["status"]
   const toStatus = (raw: string): StatusLiteral => {
-    const s = String(raw).trim().replace(/\s+/g, "")
+    const s = String(raw).trim().replace(/\s+/g, "").toLowerCase()
+    // 日本語（既存）
     if (/休/.test(s)) return "休み"
     if (/退勤/.test(s)) return "退勤入力済"
     if (/出勤/.test(s)) return "出勤入力済"
-    // "未入力" 以外の未知表現は安全側で未入力に丸める
+    // 英語コード
+    if (s === "off" || s === "dayoff") return "休み"
+    if (s === "left" || s === "checkedout" || s === "clockout") return "退勤入力済"
+    if (s === "arrived" || s === "checkedin" || s === "clockin") return "出勤入力済"
+    if (s === "none" || s === "unknown" || s === "") return "未入力"
+    // 既知外は安全側で未入力
     return "未入力"
   }
+
   const apiStatusRaw = toStr(x?.status_jp ?? x?.status ?? "")
   const isOffFlag = Boolean(x?.is_off ?? x?.day_off ?? x?.is_day_off)
 
@@ -215,6 +384,14 @@ let recordId: number | null =
   } else {
     status = "未入力"
   }
+
+  // --- 異常項目がカテゴリ英語なら日本語ラベルへ ---
+  const abnormalSrc =
+    x?.abnormalItems ?? x?.abnormal_items ?? x?.abnormal_labels ?? x?.abnormal ?? []
+  let abnormalItems: string[] = Array.isArray(abnormalSrc)
+    ? abnormalSrc.map((s: any) => toStr(s)).filter(Boolean)
+    : []
+  abnormalItems = abnormalItems.map((k) => toLabelJa(k, k))
 
   const hasAnyComment = Boolean(
     x?.hasAnyComment ?? x?.has_comment ?? x?.has_any_comment ?? (x?.comment_count ?? 0) > 0,
@@ -322,7 +499,7 @@ export async function getEmployeesForOffice(officeKey: string): Promise<Employee
   return []
 }
 
-/** ================= Records（日次） ================= */
+/** ================= Records（日次 単発取得） ================= */
 export async function getDailyRows(
   officeName: string,
   ymd: string,
@@ -470,105 +647,7 @@ export async function getMonthRows(employeeKey: string, ym: string): Promise<Hyg
   }
 }
 
-
-
-/** ------------- 詳細API 正規化＆キャッシュ（堅牢版） ------------- **/
-const CATEGORY_DICT: Record<string, { label: string; section: string }> = {
-  temperature: { label: "体温", section: "体温・体調" },
-  no_health_issues: { label: "体調異常なし", section: "体温・体調" },
-  family_no_symptoms: { label: "同居者の症状なし", section: "体温・体調" },
-  no_respiratory_symptoms: { label: "咳・喉の腫れなし", section: "呼吸器" },
-  no_severe_hand_damage: { label: "手荒れ（重度）なし", section: "手指・爪" },
-  no_mild_hand_damage: { label: "手荒れ（軽度）なし", section: "手指・爪" },
-  nails_groomed: { label: "爪・ひげ整っている", section: "身だしなみ" },
-  proper_uniform: { label: "服装が正しい", section: "身だしなみ" },
-  no_work_illness: { label: "作業中の不調なし", section: "作業後" },
-  proper_handwashing: { label: "手洗い実施", section: "作業後" },
-}
-
-const DETAIL_CACHE = new Map<string, any>()
-
-const toLabelJa = (cat: string, fallback?: string) =>
-  CATEGORY_DICT[cat]?.label ?? (fallback || cat)
-const toSectionJa = (cat: string) => CATEGORY_DICT[cat]?.section ?? ""
-
-function normalizeItems(raw: any): Array<{
-  category: string
-  label: string
-  section: string
-  is_normal: boolean
-  value: string | null
-}> {
-  const src: any[] = Array.isArray(raw) ? raw : []
-  return src.map((it) => {
-    const cat = String(it?.category ?? it?.key ?? it?.code ?? "")
-    const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
-    const rawVal = it?.value ?? it?.comment ?? null
-    const val = rawVal == null ? null : String(rawVal)
-    return {
-      category: cat,
-      label: toLabelJa(cat, String(it?.label ?? "")),
-      section: toSectionJa(cat),
-      is_normal: isNormal,
-      value: val,
-    }
-  })
-}
-
-function buildDetailFromRecord(rec: any, itemsOverride?: any[]) {
-  const itemsRaw =
-    itemsOverride ??
-    (Array.isArray(rec?.items)
-      ? rec.items
-      : Array.isArray(rec?.record_items)
-      ? rec.record_items
-      : [])
-  const items = normalizeItems(itemsRaw)
-
-  const comment =
-    items
-      .filter((x) => !x.is_normal && x.value)
-      .map((x) => `${x.label}: ${x.value}`)
-      .join(" ／ ") || ""
-
-  const employeeName =
-    rec?.employee_name ?? rec?.employee?.name ?? rec?.user_name ?? rec?.name ?? ""
-  const officeName = rec?.office_name ?? rec?.branch_name ?? rec?.office?.name ?? ""
-  const date = String(rec?.date ?? rec?.record_date ?? "").slice(0, 10)
-
-  return { items, comment, employeeName, officeName, date }
-}
-
-async function fetchItemsByRecordId(id: string | number) {
-  const paths = [
-    `/records/${id}/items/`,
-    `/records/${id}/items`,
-    `/record_items/?record=${encodeURIComponent(String(id))}`,
-    `/record_items/?record_id=${encodeURIComponent(String(id))}`,
-  ]
-  for (const p of paths) {
-    try {
-      const res = await apiGet<any>(p)
-      const list = Array.isArray(res)
-        ? res
-        : Array.isArray(res?.results)
-        ? res.results
-        : Array.isArray(res?.items)
-        ? res.items
-        : Array.isArray(res?.rows)
-        ? res.rows
-        : Array.isArray(res?.data)
-        ? res.data
-        : []
-      if (list.length) return list
-    } catch {
-      /* 次へ */
-    }
-  }
-  return []
-}
-
-// getRecordDetail（string|number対応）
+/** ================= 詳細の取得（UIの行から） ================= */
 export async function getRecordDetail(
   recordId: string | number,
 ): Promise<{
@@ -663,68 +742,11 @@ export async function getRecordDetail(
 }
 
 /** ================= 異常/コメント注入（一覧用） ================= */
-async function fetchRecordDetailFlexible(id: string): Promise<any | null> {
-  const key = String(id)
-  if (DETAIL_CACHE.has(key)) return DETAIL_CACHE.get(key)
-
-  // 合成キー（date-emp or emp-date）を検知
-  const mDateEmp = key.match(/^(\d{4}-\d{2}-\d{2})-(\d+)$/)
-  const mEmpDate = key.match(/^(\d+)-(\d{4}-\d{2}-\d{2})$/)
-  const isComposite = Boolean(mDateEmp || mEmpDate)
-
-  // 1) 純粋な数値IDに限り /records/:id/ を試す（404ノイズ防止）
-  if (!isComposite && /^\d+$/.test(key)) {
-    for (const path of [`/records/${key}/`, `/records/${key}`]) {
-      try {
-        const d = await apiGet<any>(path)
-        DETAIL_CACHE.set(key, d)
-        return d
-      } catch {}
-    }
-  }
-
-  // 2) 合成キー or 数値ID不成功 → パラメータ検索
-  let datePart: string | null = null,
-    empPart: string | null = null
-  if (mDateEmp) { datePart = mDateEmp[1]; empPart = mDateEmp[2] }
-  if (mEmpDate) { datePart = mEmpDate[2]; empPart = mEmpDate[1] }
-
-  if (datePart && empPart) {
-    const qsDate = encodeURIComponent(datePart)
-    const qsEmp = encodeURIComponent(empPart)
-    for (const p of [
-      `/records/?employee_code=${qsEmp}&date=${qsDate}`,
-      `/records/?employee=${qsEmp}&date=${qsDate}`,
-      `/records/?employee_id=${qsEmp}&date=${qsDate}`,
-    ]) {
-      try {
-        const list = await apiGet<any>(p)
-        const arr: any[] = Array.isArray(list)
-          ? list
-          : Array.isArray(list?.results)
-          ? list.results
-          : Array.isArray(list?.records)
-          ? list.records
-          : []
-        if (arr.length) {
-          DETAIL_CACHE.set(key, arr[0])
-          return arr[0]
-        }
-      } catch {}
-    }
-  }
-
-  DETAIL_CACHE.set(key, null)
-  return null
-}
-
 async function hydrateFromDetails(list: NormalizedRow[]): Promise<NormalizedRow[]> {
   const targets = list.filter((r) => (r.abnormalItems?.length ?? 0) === 0 || !r.hasAnyComment)
   if (!targets.length) return list
 
-  // ★ recordId があればそれを優先キーに、なければ id（合成キー）
-  const keys = targets.map((r) => (r.recordId != null ? String(r.recordId) : String(r.id)))
-  const results = await Promise.allSettled(keys.map((k) => fetchRecordDetailFlexible(k)))
+  const results = await Promise.allSettled(targets.map((r) => fetchRecordDetailForRow(r)))
 
   results.forEach((res, i) => {
     if (res.status !== "fulfilled" || !res.value) return
@@ -734,9 +756,9 @@ async function hydrateFromDetails(list: NormalizedRow[]): Promise<NormalizedRow[
       : Array.isArray(d?.record_items)
       ? d.record_items
       : []
+
     let abnormal: string[] = []
     let hasComment = false
-
     for (const it of items) {
       const isNormal = Boolean(it?.is_normal ?? it?.normal ?? it?.ok)
       if (!isNormal) {
@@ -767,9 +789,7 @@ export async function patchSupervisorConfirm(
   if (!recordId && recordId !== 0) {
     throw new Error("recordId is required")
   }
-  const url = join(
-    `/records/${encodeURIComponent(String(recordId))}/supervisor_confirm/`,
-  )
+  const url = join(`/records/${encodeURIComponent(String(recordId))}/supervisor_confirm/`)
 
   const init: RequestInit = confirmed
     ? {
@@ -829,114 +849,147 @@ export async function filterRowsByOffice(
   officeName: string,
 ): Promise<HygieneRecordRow[]> {
   await ensureOfficeCache()
-  const n = (s: string) => String(s).replace(/\u3000/g, "").replace(/\s+/g, "").toLowerCase()
-  const uc = (s: string) => String(s).replace(/[\s\-_.]/g, "").toUpperCase()
 
-  const wantCode = OFFICE_CACHE!.codeByName.get(n(officeName)) || ""
-  const wantId = OFFICE_CACHE!.idByName.get(n(officeName)) || ""
+  const n = (s: string) => String(s ?? "").replace(/\u3000/g, "").replace(/\s+/g, "").toLowerCase()
+  const uc = (s: string) => String(s ?? "").replace(/[\s\-_.]/g, "").toUpperCase()
 
-  const src = rows as any[]
+  // 期待する営業所キー（キャッシュ）
+  const wantNameKey = n(officeName)
+  const wantCode = OFFICE_CACHE!.codeByName.get(wantNameKey) || ""
+  const wantId = OFFICE_CACHE!.idByName.get(wantNameKey) || ""
+
+  // 行から取りうる“営業所の手掛かり”を吸収
+  const getRowKeys = (r: any) => {
+    const code = r._officeCode ?? r.officeCode ?? r.office?.code ?? ""
+    const id = r._officeId ?? r.officeId ?? r.office?.id ?? ""
+    const name = r.officeName ?? (r as any)._officeName ?? r.office?.name ?? ""
+    return { code: uc(code), id: String(id), nameKey: n(name) }
+  }
+
+  let filtered: HygieneRecordRow[]
 
   if (wantCode) {
-    const byCode = src.filter((r) => uc(r._officeCode || "") === uc(wantCode))
-    if (byCode.length) return byCode as HygieneRecordRow[]
+    // code が分かっているときは code で厳密フィルタ
+    filtered = rows.filter((r) => getRowKeys(r).code === uc(wantCode)) as HygieneRecordRow[]
+  } else if (wantId) {
+    // id が分かっているときは id で厳密フィルタ
+    filtered = rows.filter((r) => getRowKeys(r).id === String(wantId)) as HygieneRecordRow[]
+  } else {
+    // 最後の手段として name 正規化一致（※混入防止のため“必ず絞る”）
+    filtered = rows.filter((r) => getRowKeys(r).nameKey === wantNameKey) as HygieneRecordRow[]
   }
-  if (wantId) {
-    const byId = src.filter((r) => String(r._officeId || "") === String(wantId))
-    if (byId.length) return byId as HygieneRecordRow[]
-  }
-  return src.filter((r) => officeEqByName(r.officeName, officeName)) as HygieneRecordRow[]
-}
-// =============================
-// A) アダプタに集約（推奨）
-// ファイル: src/lib/hygieneAdminAdapter.ts
-// 末尾のエクスポート群の近くに追記
-// =============================
 
+  return filtered
+}
+
+/** ================= 日次：全従業員で埋める ================= */
+// ================= 日次：全従業員で埋める（ID→コード→一意氏名 で厳密突合） =================
 export async function getDailyRowsAllEmployees(
   officeName: string,
   ymd: string,
 ): Promise<HygieneRecordRow[]> {
-  // 既存の堅牢ロジックを最大限再利用
+  // 1) APIからその日の既存記録 & 営業所の従業員マスタ
   const [rows, employees] = await Promise.all([
-    getDailyRows(officeName, ymd),            // 一旦 API からある分だけ取得
-    getEmployeesForOffice(officeName),        // 営業所の従業員一覧
+    getDailyRows(officeName, ymd),
+    getEmployeesForOffice(officeName),
   ])
 
-  // 既存行を正規化して、社員コード/IDを拾えるようにする
+  // 2) 既存行を内部正規化
   const normed = (rows as any[]).map((x) => normalizeRow(x)) as NormalizedRow[]
 
-  // 既存行を employeeCode / employeeName で引けるように準備
+  // 3) 既存行を引くための索引（ID 最優先 → コード → 氏名）
+  const byEmpId   = new Map<string, NormalizedRow>()
   const byEmpCode = new Map<string, NormalizedRow>()
   const byEmpName = new Map<string, NormalizedRow>()
   for (const r of normed) {
+    if (r._employeeId)   byEmpId.set(String(r._employeeId), r)
     if (r._employeeCode) byEmpCode.set(String(r._employeeCode), r)
-    if (r.employeeName) byEmpName.set(String(r.employeeName), r)
+    if (r.employeeName)  byEmpName.set(String(r.employeeName), r)
   }
 
-  // 従業員一覧をベースに、既存行が無い人は「未入力」で生成
+  // 4) 同姓同名の曖昧一致を避けるため、重複名を検出
+  const nameCount = new Map<string, number>()
+  employees.forEach((e) => nameCount.set(e.name, 1 + (nameCount.get(e.name) ?? 0)))
+  const isUniqueName = (name: string) => (nameCount.get(name) ?? 0) === 1
+
+  // 5) 従業員マスタをベースに画面行を構築（既存ヒットが無ければ「未入力」の合成行）
   const synth: HygieneRecordRow[] = employees.map((e) => {
-    const code = (e.code || '').trim()
-    const name = (e.name || '').trim()
+    const code = (e.code || "").trim()
+    const name = (e.name || "").trim()
 
-    const hit = (code && byEmpCode.get(code)) || (name && byEmpName.get(name))
+    // 突合の優先順位：employeeId → employeeCode → （重複のない場合のみ）name
+    const hit =
+      (e.id && byEmpId.get(String(e.id))) ||
+      (code && byEmpCode.get(code)) ||
+      (name && isUniqueName(name) ? byEmpName.get(name) : undefined)
+
     if (hit) {
-return {
-  id: String(hit.id),
-  officeName: String(hit.officeName || officeName),
-  employeeName: String(hit.employeeName || name),
-  date: String(hit.date || ymd).slice(0, 10),
-  status: hit.status,
-  supervisorConfirmed: !!hit.supervisorConfirmed,
-  abnormalItems: Array.isArray(hit.abnormalItems) ? hit.abnormalItems : [],
-  hasAnyComment: !!hit.hasAnyComment,
-  recordId: hit.recordId ?? (Number.isFinite(Number(hit.id)) ? Number(hit.id) : null), // ★追加
-}
-}
+      return {
+        id: String(hit.id),
+        officeName: String(hit.officeName || officeName),
+        employeeName: String(hit.employeeName || name),
+        date: String(hit.date || ymd).slice(0, 10),
+        status: hit.status,
+        supervisorConfirmed: !!hit.supervisorConfirmed,
+        abnormalItems: Array.isArray(hit.abnormalItems) ? hit.abnormalItems : [],
+        hasAnyComment: !!hit.hasAnyComment,
+        recordId: hit.recordId ?? (Number.isFinite(Number(hit.id)) ? Number(hit.id) : null),
+      }
+    }
 
-    // ★未入力の合成行
-return {
-  id: `${ymd}-${code || name}`,
-  officeName,
-  employeeName: name,
-  date: ymd,
-  status: '未入力',
-  supervisorConfirmed: false,
-  abnormalItems: [],
-  hasAnyComment: false,
-  // ▼追加：未作成なので null
-  recordId: null,
-}  })
+    // 合成行のキーは employeeId 起点にして衝突を回避
+    return {
+      id: `${ymd}-${e.id}`,
+      officeName,
+      employeeName: name,
+      date: ymd,
+      status: "未入力",
+      supervisorConfirmed: false,
+      abnormalItems: [],
+      hasAnyComment: false,
+      recordId: null,
+    }
+  })
 
-  // 既存行にいて、従業員マスタにいない（例: 退職/異動の残骸、ゲスト等）も表示に落とさないために追加
-  const extra = normed.filter((r) => {
-    const key = String(r._employeeCode || r.employeeName || '')
-    if (!key) return false
-    return !employees.some((e) => e.code === r._employeeCode || e.name === r.employeeName)
-}).map((hit) => ({
-  id: String(hit.id),
-  officeName: String(hit.officeName || officeName),
-  employeeName: String(hit.employeeName || ''),
-  date: String(hit.date || ymd).slice(0, 10),
-  status: hit.status,
-  supervisorConfirmed: !!hit.supervisorConfirmed,
-  abnormalItems: Array.isArray(hit.abnormalItems) ? hit.abnormalItems : [],
-  hasAnyComment: !!hit.hasAnyComment,
-  // ▼追加
-  recordId:
-    hit.recordId ?? (Number.isFinite(Number(hit.id)) ? Number(hit.id) : null),
-}))
+  // 6) 既存行にいるが従業員マスタに居ない（退職・異動の残骸等）も保持
+  const extra = normed
+    .filter((r) => {
+      const key = String(r._employeeId || r._employeeCode || r.employeeName || "")
+      if (!key) return false
+      return !employees.some(
+        (e) =>
+          String(e.id) === String(r._employeeId) ||
+          e.code === r._employeeCode ||
+          e.name === r.employeeName,
+      )
+    })
+    .map((hit) => ({
+      id: String(hit.id),
+      officeName: String(hit.officeName || officeName),
+      employeeName: String(hit.employeeName || ""),
+      date: String(hit.date || ymd).slice(0, 10),
+      status: hit.status,
+      supervisorConfirmed: !!hit.supervisorConfirmed,
+      abnormalItems: Array.isArray(hit.abnormalItems) ? hit.abnormalItems : [],
+      hasAnyComment: !!hit.hasAnyComment,
+      recordId: hit.recordId ?? (Number.isFinite(Number(hit.id)) ? Number(hit.id) : null),
+    }))
+
   const merged = [...synth, ...extra]
 
-  // 異常/コメントの注入（不足分のみ）
+  // 7) 異常/コメントの注入（不足分のみ）
   const enriched = await hydrateFromDetails(merged as any)
 
-  // 数字の employeeName を従業員キャッシュで補完
+  // 8) 数字の employeeName をキャッシュから補完
   enriched.forEach((r: any) => patchEmployeeName(r))
 
-  // 表示安定のため氏名ソート
-  return enriched.sort((a: HygieneRecordRow, b: HygieneRecordRow) =>
-    a.employeeName.localeCompare(b.employeeName, 'ja'),
+  // 9) 最終防波堤：営業所で厳密フィルタ（0件になったら合成行を優先）
+  const strictly = await filterRowsByOffice(enriched as any, officeName)
+  const finalRows = strictly.length > 0 ? strictly : (enriched as any)
+
+  // 10) 表示安定のため氏名ソート
+  return finalRows.sort((a: HygieneRecordRow, b: HygieneRecordRow) =>
+    a.employeeName.localeCompare(b.employeeName, "ja"),
   )
 }
 
@@ -1020,44 +1073,45 @@ export async function clearDailyRecord(params: {
   throw new Error("レコードのクリアに失敗しました")
 }
 
-
-// 追加: 従業員の活動範囲（最初の記録〜今日）を取得
+/** ================= Active Range（最初の記録〜今日） ================= */
 export type ActiveRange = { startYm: string; endYm: string }
 
-// src/lib/hygieneAdminAdapter.ts
-
 export async function getEmployeeActiveRange(
-  employeeId: string | number
+  employeeId: string | number,
 ): Promise<{ startYm: string; endYm: string }> {
   const id = encodeURIComponent(String(employeeId))
 
-  // ✅ 正しいエンドポイント（推奨：パスパラメータ／末尾スラッシュあり）
+  // 推奨：パス版
   try {
     const res = await apiGet<any>(`/employees/${id}/active_range/`)
-    const startYm = String(res?.startYm || '').slice(0, 7)
-    const endYm   = String(res?.endYm   || '').slice(0, 7)
+    const startYm = String(res?.startYm || "").slice(0, 7)
+    const endYm = String(res?.endYm || "").slice(0, 7)
     return { startYm, endYm }
   } catch {
     // フォールバック：クエリ版
     const res = await apiGet<any>(`/employees/active_range/?employee_id=${id}`)
-    const startYm = String(res?.startYm || '').slice(0, 7)
-    const endYm   = String(res?.endYm   || '').slice(0, 7)
+    const startYm = String(res?.startYm || "").slice(0, 7)
+    const endYm = String(res?.endYm || "").slice(0, 7)
     return { startYm, endYm }
   }
 }
 
-// 追加: YYYY-MM を start〜end（両端含む）で列挙
+/** ================= YYYY-MM の列挙 ================= */
 export function enumerateYm(startYm: string, endYm: string): string[] {
   const ok = (s: string) => /^\d{4}-\d{2}$/.test(s)
   if (!ok(startYm) || !ok(endYm)) return []
   const [sy, sm] = startYm.split("-").map(Number)
   const [ey, em] = endYm.split("-").map(Number)
   const out: string[] = []
-  let y = sy, m = sm
+  let y = sy,
+    m = sm
   while (y < ey || (y === ey && m <= em)) {
     out.push(`${y}-${String(m).padStart(2, "0")}`)
     m++
-    if (m > 12) { m = 1; y++ }
+    if (m > 12) {
+      m = 1
+      y++
+    }
   }
   return out
 }
