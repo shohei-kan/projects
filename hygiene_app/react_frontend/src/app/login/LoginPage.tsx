@@ -1,6 +1,6 @@
 "use client";
 
-import React, { JSX, useMemo, useState } from "react";
+import React, { JSX, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -21,11 +21,11 @@ import {
 import { AlertCircle } from "lucide-react";
 
 import { TODAY_STR } from "@/data/mockDate";
-import { mockBranches } from "@/data/mockBranches"; // 必要なら "@/data" のバレル経由に変更OK
+import { mockBranches } from "@/data/mockBranches";
 import { mockAdmins } from "@/data/mockAdmins";
 
 /* =========================
-   型（このファイル内で完結）
+   型
    ========================= */
 type UserRole = "hq_admin" | "branch_manager" | "employee";
 type SessionUser =
@@ -40,12 +40,27 @@ type SessionPayload = {
 
 function saveSession(payload: SessionPayload) {
   localStorage.setItem("session", JSON.stringify(payload));
-  // レガシーキーが残っていると誤作動する可能性があるため念のため消す
+  // レガシーキー掃除
   localStorage.removeItem("isLoggedIn");
   localStorage.removeItem("loginDate");
   localStorage.removeItem("role");
   localStorage.removeItem("branchCode");
 }
+
+/* =========================
+   入力正規化ユーティリティ（全角→半角）
+   ========================= */
+// 全角英数記号 → 半角（代表的な範囲）
+const toHalf = (s: string) =>
+  s
+    .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/　/g, " ");
+
+// 英数字のみ（営業所コード用）
+const onlyAlnum = (s: string) => s.replace(/[^A-Za-z0-9]/g, "");
+
+// 数字のみ（PIN/ID/パス用）
+const onlyDigits = (s: string) => s.replace(/\D/g, "");
 
 /* =========================
    バリデーション Schema
@@ -102,37 +117,23 @@ export default function LoginForm(): JSX.Element {
   });
 
   const role = watch("role");
-  const officeCode = role === "branch" ? (watch("officeCode") as string | undefined) : undefined;
-
-  // 営業所コードは常に大文字へ補正
-  useMemo(() => {
-    if (role !== "branch") return;
-    if (!officeCode) return;
-    const upper = officeCode.toUpperCase();
-    if (upper !== officeCode) setValue("officeCode" as any, upper, { shouldValidate: true });
-  }, [officeCode, role, setValue]);
 
   const onSubmit = async (values: FormValues) => {
     setServerError("");
 
     // 営業所ログイン
     if (values.role === "branch") {
-      const branch = mockBranches.find((b) => b.code === values.officeCode);
-      if (!branch) {
-        setServerError("営業所コードが見つかりません。");
-        return;
-      }
-      if (branch.password !== values.password) {
-        setServerError("パスワードが間違っています。");
-        return;
-      }
+      const officeCode = values.officeCode.toUpperCase();
+      const branch = mockBranches.find((b) => b.code === officeCode);
+      if (!branch) return setServerError("営業所コードが見つかりません。");
+      if (branch.password !== values.password) return setServerError("パスワードが間違っています。");
 
       const payload: SessionPayload = {
         isLoggedIn: true,
         loginDate: TODAY_STR,
         user: {
-          role: "branch_manager", // 社内運用に合わせて "employee" に変更可
-          userId: branch.code,    // 共有アカウントなら code をID代用
+          role: "branch_manager",
+          userId: branch.code,
           displayName: (branch as any).name ?? branch.code,
           branchCode: branch.code,
         },
@@ -145,14 +146,8 @@ export default function LoginForm(): JSX.Element {
     // 本部ログイン
     if (values.role === "hq_admin") {
       const admin = mockAdmins.find((a) => a.id === values.adminId);
-      if (!admin) {
-        setServerError("IDが見つかりません。");
-        return;
-      }
-      if (admin.password !== values.adminPass) {
-        setServerError("パスワードが間違っています。");
-        return;
-      }
+      if (!admin) return setServerError("IDが見つかりません。");
+      if (admin.password !== values.adminPass) return setServerError("パスワードが間違っています。");
 
       const payload: SessionPayload = {
         isLoggedIn: true,
@@ -161,7 +156,7 @@ export default function LoginForm(): JSX.Element {
           role: "hq_admin",
           userId: admin.id,
           displayName: admin.name,
-          branchCode: null, // 本部は所属なし
+          branchCode: null,
         },
       };
       saveSession(payload);
@@ -206,7 +201,12 @@ export default function LoginForm(): JSX.Element {
                     autoComplete="username"
                     aria-invalid={!!(errors as any).officeCode || undefined}
                     aria-describedby={(errors as any).officeCode ? "officeCode-error" : undefined}
-                    {...register("officeCode")}
+                    {...register("officeCode", {
+                      onChange: (e) => {
+                        const v = onlyAlnum(toHalf(e.target.value)).toUpperCase();
+                        setValue("officeCode" as any, v, { shouldValidate: true });
+                      },
+                    })}
                   />
                   {(errors as any).officeCode && (
                     <p id="officeCode-error" className="text-sm text-red-600">
@@ -227,7 +227,12 @@ export default function LoginForm(): JSX.Element {
                     inputMode="numeric"
                     aria-invalid={!!(errors as any).password || undefined}
                     aria-describedby={(errors as any).password ? "password-error" : undefined}
-                    {...register("password")}
+                    {...register("password", {
+                      onChange: (e) => {
+                        const v = onlyDigits(toHalf(e.target.value));
+                        setValue("password" as any, v, { shouldValidate: true });
+                      },
+                    })}
                   />
                   {(errors as any).password && (
                     <p id="password-error" className="text-sm text-red-600">
@@ -253,7 +258,12 @@ export default function LoginForm(): JSX.Element {
                     inputMode="numeric"
                     aria-invalid={!!(errors as any).adminId || undefined}
                     aria-describedby={(errors as any).adminId ? "adminId-error" : undefined}
-                    {...register("adminId")}
+                    {...register("adminId", {
+                      onChange: (e) => {
+                        const v = onlyDigits(toHalf(e.target.value));
+                        setValue("adminId" as any, v, { shouldValidate: true });
+                      },
+                    })}
                   />
                   {(errors as any).adminId && (
                     <p id="adminId-error" className="text-sm text-red-600">
@@ -274,7 +284,12 @@ export default function LoginForm(): JSX.Element {
                     inputMode="numeric"
                     aria-invalid={!!(errors as any).adminPass || undefined}
                     aria-describedby={(errors as any).adminPass ? "adminPass-error" : undefined}
-                    {...register("adminPass")}
+                    {...register("adminPass", {
+                      onChange: (e) => {
+                        const v = onlyDigits(toHalf(e.target.value));
+                        setValue("adminPass" as any, v, { shouldValidate: true });
+                      },
+                    })}
                   />
                   {(errors as any).adminPass && (
                     <p id="adminPass-error" className="text-sm text-red-600">
